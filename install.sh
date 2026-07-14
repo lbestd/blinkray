@@ -103,29 +103,46 @@ chown -R "${PANEL_USER}:${PANEL_USER}" "$SCRIPT_DIR"
 chmod 750 "$DATA_DIR"
 chmod g+rx "$SCRIPT_DIR"
 
-GENERATED_PASSWORD=""
-if [ ! -f "$ENV_FILE" ]; then
-  log "Создаю $ENV_FILE"
-  if [ -n "${PANEL_PASSWORD:-}" ]; then
-    PASSWORD="$PANEL_PASSWORD"
-  else
-    PASSWORD="$(openssl rand -base64 18 | tr -d '=+/')"
-    GENERATED_PASSWORD="$PASSWORD"
+# PANEL_PASSWORD / PANEL_HOST / PANEL_PORT are sticky (kept across re-runs if
+# already set); PANEL_DATA_DIR/XRAY_BIN/XRAY_CONFIG_PATH are always
+# rewritten to match the current install location — an old env file with
+# stale absolute paths (e.g. from a checkout that later got relocated) is
+# exactly what caused "Permission denied: /root/blinkray/data" here before.
+_env_get() {
+  local key="$1" default="$2"
+  if [ -f "$ENV_FILE" ]; then
+    local val
+    val="$(grep -m1 "^${key}=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
+    if [ -n "$val" ]; then echo "$val"; return; fi
   fi
-  cat > "$ENV_FILE" <<EOF
+  echo "$default"
+}
+
+GENERATED_PASSWORD=""
+EXISTING_PASSWORD="$(_env_get PANEL_PASSWORD "")"
+if [ -n "$EXISTING_PASSWORD" ]; then
+  PASSWORD="$EXISTING_PASSWORD"
+elif [ -n "${PANEL_PASSWORD:-}" ]; then
+  PASSWORD="$PANEL_PASSWORD"
+else
+  PASSWORD="$(openssl rand -base64 18 | tr -d '=+/')"
+  GENERATED_PASSWORD="$PASSWORD"
+fi
+PANEL_HOST_VAL="$(_env_get PANEL_HOST 0.0.0.0)"
+PANEL_PORT_VAL="$(_env_get PANEL_PORT 10077)"
+
+log "Пишу $ENV_FILE (пароль/хост/порт сохраняю, если уже были заданы; пути пересчитываю под ${SCRIPT_DIR})"
+cat > "$ENV_FILE" <<EOF
 PANEL_PASSWORD=${PASSWORD}
-PANEL_HOST=0.0.0.0
-PANEL_PORT=10077
+PANEL_HOST=${PANEL_HOST_VAL}
+PANEL_PORT=${PANEL_PORT_VAL}
 PANEL_DATA_DIR=${DATA_DIR}
 XRAY_BIN=${XRAY_BIN}
 XRAY_CONFIG_PATH=${DATA_DIR}/xray/config.json
 XRAY_SERVICE_NAME=${XRAY_SERVICE_NAME}
 EOF
-  chmod 600 "$ENV_FILE"
-  chown "${PANEL_USER}:${PANEL_USER}" "$ENV_FILE"
-else
-  log "$ENV_FILE уже существует — не трогаю (пароль остаётся прежним)"
-fi
+chmod 600 "$ENV_FILE"
+chown "${PANEL_USER}:${PANEL_USER}" "$ENV_FILE"
 
 log "Настраиваю sudoers (право панели управлять xray.service без пароля)"
 cat > "$SUDOERS_FILE" <<EOF
