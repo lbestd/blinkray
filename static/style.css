@@ -109,6 +109,8 @@ input[type=text], input[type=number], input[type=password], input[type=file] {
 .clients-table th, .clients-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .clients-table .empty { text-align: center; color: var(--muted); padding: 20px; }
 .uuid { font-size: 11px; color: var(--muted); }
+.rename-form { display: flex; gap: 6px; min-width: 140px; }
+.rename-input { width: 110px; font-size: 13px; }
 .link-cell { display: flex; gap: 6px; min-width: 260px; }
 .link-cell input { flex: 1; font-size: 11px; }
 .actions { display: flex; gap: 6px; white-space: nowrap; }

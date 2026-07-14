@@ -90,18 +90,42 @@ def toggle_client(client_id: str) -> None:
     save_clients(clients)
 
 
+def rename_client(client_id: str, new_name: str) -> bool:
+    new_name = new_name.strip()
+    if not new_name:
+        return False
+    clients = load_clients()
+    found = False
+    for c in clients:
+        if c["id"] == client_id:
+            c["name"] = new_name
+            found = True
+    if found:
+        save_clients(clients)
+    return found
+
+
 # ------------------------------------------------------------- vless links
+
+def reality_server_names(settings: dict) -> list[str]:
+    """reality_server_name is stored as a comma-separated string so a
+    REALITY inbound can camouflage as more than one SNI (xray-core's
+    realitySettings.serverNames accepts a list)."""
+    raw = settings.get("reality_server_name", "") or ""
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
 
 def build_vless_link(client: dict, settings: dict) -> str:
     mode = settings.get("mode", "ws_tls")
     if mode == "reality":
+        names = reality_server_names(settings)
         params = {
             "encryption": "none",
             "security": "reality",
             "type": "tcp",
             "flow": "xtls-rprx-vision",
             "pbk": settings.get("reality_public_key", ""),
-            "sni": settings.get("reality_server_name", ""),
+            "sni": names[0] if names else "",
             "sid": settings.get("reality_short_id", ""),
             "fp": settings.get("fingerprint", "chrome"),
         }
@@ -144,7 +168,7 @@ def build_xray_config(settings: dict, clients: list[dict]) -> dict:
             "security": "reality",
             "realitySettings": {
                 "dest": settings["reality_dest"],
-                "serverNames": [settings["reality_server_name"]],
+                "serverNames": reality_server_names(settings),
                 "privateKey": settings["reality_private_key"],
                 "shortIds": [settings["reality_short_id"]],
             },
@@ -167,7 +191,7 @@ def build_xray_config(settings: dict, clients: list[dict]) -> dict:
         }
 
     return {
-        "log": {"loglevel": "warning"},
+        "log": {"loglevel": "warning", "access": str(config.XRAY_ACCESS_LOG)},
         "inbounds": [
             {
                 "tag": "vless-in",
@@ -218,6 +242,19 @@ def generate_reality_keypair() -> tuple[str, str]:
     if not private_key or not public_key:
         raise RuntimeError(f"could not parse xray x25519 output: {out!r}")
     return private_key, public_key
+
+
+def public_key_from_private(private_key: str) -> str:
+    """Derive the REALITY public key from an already-existing private key —
+    used when importing a hand-written config.json (see tools/import_xray_config.py)
+    so a pre-existing deployment's key doesn't get silently replaced."""
+    ok, out = _run([config.XRAY_BIN, "x25519", "-i", private_key])
+    if not ok:
+        raise RuntimeError(f"failed to derive public key: {out}")
+    for line in out.splitlines():
+        if "PublicKey" in line:
+            return line.split(":", 1)[1].strip()
+    raise RuntimeError(f"could not parse xray x25519 -i output: {out!r}")
 
 
 def ensure_reality_keys(settings: dict) -> bool:

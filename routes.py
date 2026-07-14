@@ -1,15 +1,36 @@
+import hmac
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 from aiohttp import web
 
+import auth
 import config
 import templates
 import xray_manager
 import certgen
+import stats
 
 
 def _redirect_with_flash(msg: str, level: str = "ok") -> web.HTTPFound:
     return web.HTTPFound(f"/?flash={quote(msg)}&level={level}")
+
+
+def _client_stats(clients: list[dict]) -> dict:
+    raw = stats.load_stats().get("clients", {})
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    result = {}
+    for c in clients:
+        entry = raw.get(c["name"])
+        if not entry:
+            continue
+        result[c["id"]] = {
+            "count": entry.get("count", 0),
+            "today": entry.get("daily", {}).get(today, 0),
+            "last_seen": entry.get("last_seen"),
+            "last_ip": entry.get("last_ip", ""),
+        }
+    return result
 
 
 async def dashboard(request: web.Request) -> web.Response:
@@ -29,6 +50,7 @@ async def dashboard(request: web.Request) -> web.Response:
         settings=settings,
         clients=clients,
         links=links,
+        client_stats=_client_stats(clients),
         xray_ver=xray_manager.xray_version(),
         apk_info=apk_info,
         flash=request.query.get("flash"),
@@ -152,6 +174,44 @@ async def clients_toggle(request: web.Request) -> web.Response:
     return _redirect_with_flash("Статус клиента изменён")
 
 
+async def clients_rename(request: web.Request) -> web.Response:
+    client_id = request.match_info["client_id"]
+    data = await request.post()
+    name = str(data.get("name", "")).strip()
+    if not name:
+        return _redirect_with_flash("Имя не может быть пустым", "error")
+    if not xray_manager.rename_client(client_id, name):
+        return _redirect_with_flash("Клиент не найден", "error")
+    # Just relabels the client in xray's config (the "email" field, used for
+    # logs only) — regenerate the file for next restart, but no need to
+    # bump active connections over a cosmetic rename.
+    xray_manager.apply_config()
+    return _redirect_with_flash(f"Клиент переименован в «{name}»")
+
+
+# ------------------------------------------------------------------- account
+
+async def change_password(request: web.Request) -> web.Response:
+    data = await request.post()
+    current = str(data.get("current_password", ""))
+    new = str(data.get("new_password", ""))
+    new2 = str(data.get("new_password2", ""))
+
+    if not config.PANEL_PASSWORD or not hmac.compare_digest(current, config.PANEL_PASSWORD):
+        return _redirect_with_flash("Текущий пароль неверный", "error")
+    if len(new) < 8:
+        return _redirect_with_flash("Новый пароль слишком короткий (минимум 8 символов)", "error")
+    if new != new2:
+        return _redirect_with_flash("Новые пароли не совпадают", "error")
+
+    config.update_panel_password(new)
+    auth.rotate_secret()  # invalidates every session, including this one
+
+    resp = web.HTTPFound("/login?notice=" + quote("Пароль изменён — войдите заново"))
+    resp.del_cookie(auth.SESSION_COOKIE)
+    raise resp
+
+
 # ----------------------------------------------------------------------- apk
 
 def _apk_path():
@@ -225,9 +285,12 @@ def setup_routes(app: web.Application):
     app.router.add_post("/clients/add", clients_add)
     app.router.add_post("/clients/{client_id}/delete", clients_delete)
     app.router.add_post("/clients/{client_id}/toggle", clients_toggle)
+    app.router.add_post("/clients/{client_id}/rename", clients_rename)
 
     app.router.add_post("/apk/upload", apk_upload)
     app.router.add_get("/apk/download", apk_download)
     app.router.add_post("/apk/delete", apk_delete)
+
+    app.router.add_post("/account/password", change_password)
 
     app.router.add_static("/static", str((config.BASE_DIR / "static")), name="static")

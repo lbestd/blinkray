@@ -97,6 +97,8 @@ fi
 "${SCRIPT_DIR}/venv/bin/pip" install -q --upgrade pip
 "${SCRIPT_DIR}/venv/bin/pip" install -q -r "${SCRIPT_DIR}/requirements.txt"
 
+IP="$(curl -fs -4 --max-time 3 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')"
+
 log "Настраиваю каталоги и права"
 mkdir -p "$DATA_DIR"
 chown -R "${PANEL_USER}:${PANEL_USER}" "$SCRIPT_DIR"
@@ -157,6 +159,61 @@ EOF
 chmod 440 "$SUDOERS_FILE"
 visudo -cf "$SUDOERS_FILE" >/dev/null
 
+# If a xray.service already exists and isn't ours, it's very likely a
+# hand-configured deployment (see GUIDE.md) with real clients already
+# depending on it — overwriting the unit file below would otherwise
+# silently orphan it: systemd would keep the old process running under
+# its current config until *something* restarts it (a reboot, a crash),
+# at which point it picks up our new, empty config.json out of nowhere.
+# Import the existing clients/keys first so that when we do take over,
+# the handover is a no-op for anyone already connected.
+XRAY_IMPORTED=0
+migrate_existing_xray() {
+  local unit_file="$XRAY_SERVICE_FILE"
+  [ -f "$unit_file" ] || return 0
+  grep -q "managed by Blinkray" "$unit_file" 2>/dev/null && return 0
+
+  warn "Обнаружен уже существующий ${XRAY_SERVICE_NAME}.service, не связанный с Blinkray — пробую импортировать его клиентов и ключи, чтобы их не потерять"
+
+  local backup_dir="/root/blinkray-migration-backup-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$backup_dir"
+  cp -a "$unit_file" "$backup_dir/" 2>/dev/null || true
+  [ -d "${unit_file}.d" ] && cp -a "${unit_file}.d" "$backup_dir/" 2>/dev/null
+  log "Бэкап оригинального unit'а: ${backup_dir}"
+
+  local existing_config=""
+  if [ -d "${unit_file}.d" ]; then
+    existing_config="$(grep -h -oP '(?<=-c |-config )\S+\.json' "${unit_file}.d"/*.conf 2>/dev/null | tail -1)"
+  fi
+  if [ -z "$existing_config" ]; then
+    existing_config="$(grep -oP '(?<=-c |-config )\S+\.json' "$unit_file" 2>/dev/null | tail -1)"
+  fi
+
+  if [ -z "$existing_config" ] || [ ! -f "$existing_config" ]; then
+    warn "Не нашёл путь к текущему config.json xray в unit-файле — авто-импорт пропущен, настройте клиентов вручную через веб-интерфейс после установки"
+    return 0
+  fi
+
+  log "Импортирую ${existing_config} в Blinkray"
+  if PANEL_DATA_DIR="$DATA_DIR" XRAY_BIN="$XRAY_BIN" XRAY_CONFIG_PATH="${DATA_DIR}/xray/config.json" \
+     "${SCRIPT_DIR}/venv/bin/python3" "${SCRIPT_DIR}/tools/import_xray_config.py" "$existing_config" "$IP"
+  then
+    log "Импорт успешен — клиенты и ключи перенесены в Blinkray"
+    if [ -d "${unit_file}.d" ]; then
+      local f
+      for f in "${unit_file}.d"/*.conf; do
+        [ -f "$f" ] || continue
+        mv "$f" "${f}.disabled-by-blinkray"
+      done
+      log "Отключил drop-in override в ${unit_file}.d (переименован в *.disabled-by-blinkray) — иначе он продолжил бы запускать xray со старым конфигом в обход Blinkray"
+    fi
+    XRAY_IMPORTED=1
+  else
+    warn "Авто-импорт не удался (см. вывод выше) — исходный ${existing_config} и старый ${XRAY_SERVICE_NAME}.service не тронуты. Настройте клиентов вручную через веб-интерфейс."
+  fi
+}
+migrate_existing_xray
+
 log "Пишу systemd unit'ы"
 cat > "$PANEL_SERVICE_FILE" <<EOF
 [Unit]
@@ -208,7 +265,37 @@ else
   warn "Панель не запустилась, смотрите: journalctl -u blinkray -n 50"
 fi
 
-IP="$(curl -fs -4 --max-time 3 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')"
+if [ "$XRAY_IMPORTED" = "1" ] && systemctl is-active --quiet "${XRAY_SERVICE_NAME}.service"; then
+  log "Перезапускаю ${XRAY_SERVICE_NAME}.service с импортированным конфигом (короткий разрыв активных соединений)"
+  systemctl restart "${XRAY_SERVICE_NAME}.service"
+  sleep 1
+  if systemctl is-active --quiet "${XRAY_SERVICE_NAME}.service"; then
+    log "${XRAY_SERVICE_NAME}.service перезапущен успешно"
+  else
+    warn "${XRAY_SERVICE_NAME}.service не поднялся после перезапуска! journalctl -u ${XRAY_SERVICE_NAME} -n 50 — бэкап оригинального unit'а лежит в /root/blinkray-migration-backup-*"
+  fi
+fi
+
+log "Проверяю фаервол — панели нужен доступ к tcp/${PANEL_PORT_VAL} снаружи"
+if command -v iptables >/dev/null 2>&1 && iptables -L INPUT -n 2>/dev/null | head -1 | grep -q "policy DROP"; then
+  if ! iptables -C INPUT -p tcp --dport "$PANEL_PORT_VAL" -j ACCEPT 2>/dev/null; then
+    iptables -A INPUT -p tcp --dport "$PANEL_PORT_VAL" -j ACCEPT
+    log "INPUT policy DROP — открыл tcp/${PANEL_PORT_VAL} для панели"
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+      netfilter-persistent save >/dev/null 2>&1 || warn "netfilter-persistent save не сработал — сохраните правила вручную, иначе пропадут после перезагрузки"
+    else
+      warn "netfilter-persistent не найден — правило пропадёт после перезагрузки (apt install iptables-persistent && netfilter-persistent save)"
+    fi
+  fi
+elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+  ufw allow "${PANEL_PORT_VAL}/tcp" >/dev/null 2>&1 && log "ufw: открыл ${PANEL_PORT_VAL}/tcp"
+elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+  firewall-cmd --permanent --add-port="${PANEL_PORT_VAL}/tcp" >/dev/null 2>&1
+  firewall-cmd --reload >/dev/null 2>&1
+  log "firewalld: открыл ${PANEL_PORT_VAL}/tcp"
+fi
+echo "Не забудьте отдельно открыть и порт самого VLESS-инбаунда (по умолчанию 443/tcp),"
+echo "если фаервол на сервере его ещё не пропускает."
 
 echo
 echo "========================================================"
@@ -221,7 +308,14 @@ if [ -n "$GENERATED_PASSWORD" ]; then
 fi
 echo "========================================================"
 echo
-echo "Дальше: откройте панель в браузере (сертификат самоподписной —"
-echo "браузер предупредит, это нормально), в разделе «Настройки подключения»"
-echo "укажите публичный адрес/порт/SNI и сохраните, затем нажмите «Запустить»"
-echo "в разделе «Сервер»."
+if [ "$XRAY_IMPORTED" = "1" ]; then
+  echo "Существующий xray.service был импортирован в Blinkray автоматически —"
+  echo "клиенты и ключи уже на месте, сервер уже запущен. Откройте панель"
+  echo "(сертификат самоподписной — браузер предупредит, это нормально) и"
+  echo "сверьте раздел «Настройки подключения» и список клиентов."
+else
+  echo "Дальше: откройте панель в браузере (сертификат самоподписной —"
+  echo "браузер предупредит, это нормально), в разделе «Настройки подключения»"
+  echo "укажите публичный адрес/порт/SNI и сохраните, затем нажмите «Запустить»"
+  echo "в разделе «Сервер»."
+fi

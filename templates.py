@@ -1,5 +1,6 @@
 """Tiny HTML templating with plain f-strings (no Jinja2 dependency).
 All user-controlled values are passed through html.escape()."""
+from datetime import datetime
 from html import escape
 from urllib.parse import quote
 
@@ -27,13 +28,15 @@ def _flash_html(flash: str | None, level: str) -> str:
     return f'<div class="{cls}">{escape(flash)}</div>'
 
 
-def login_page(error: str | None) -> str:
-    err_html = '<div class="flash flash-error">Неверный пароль</div>' if error else ""
+def login_page(error: str | None, notice: str | None = None) -> str:
+    err_html = f'<div class="flash flash-error">{escape(error)}</div>' if error else ""
+    notice_html = f'<div class="flash flash-ok">{escape(notice)}</div>' if notice else ""
     body = f"""
 <div class="login-wrap">
   <form class="login-box" method="post" action="/login">
     <h1>Blinkray</h1>
     {err_html}
+    {notice_html}
     <input type="password" name="password" placeholder="Пароль" autofocus required>
     <button type="submit">Войти</button>
   </form>
@@ -64,7 +67,12 @@ def _client_row(client: dict, link: str) -> str:
     toggle_label = "Выключить" if enabled else "Включить"
     return f"""
 <tr>
-  <td>{name}</td>
+  <td>
+    <form method="post" action="/clients/{cid}/rename" class="inline-form rename-form">
+      <input type="text" name="name" value="{name}" class="rename-input" required>
+      <button type="submit" class="btn btn-small">Сохранить</button>
+    </form>
+  </td>
   <td><code class="uuid">{cid}</code></td>
   <td><span class="badge {state_cls}">{state_label}</span></td>
   <td class="link-cell">
@@ -79,6 +87,32 @@ def _client_row(client: dict, link: str) -> str:
       <button type="submit" class="btn btn-small btn-danger">Удалить</button>
     </form>
   </td>
+</tr>
+"""
+
+
+def _format_ts(ts: float | None) -> str:
+    if not ts:
+        return "—"
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
+def _stats_row(client: dict, entry: dict | None) -> str:
+    name = escape(client["name"])
+    if not entry:
+        return f"""
+<tr>
+  <td>{name}</td>
+  <td colspan="4" class="muted">ещё не подключался</td>
+</tr>
+"""
+    return f"""
+<tr>
+  <td>{name}</td>
+  <td>{entry['count']}</td>
+  <td>{entry['today']}</td>
+  <td>{_format_ts(entry['last_seen'])}</td>
+  <td><code class="uuid">{escape(entry['last_ip'])}</code></td>
 </tr>
 """
 
@@ -100,11 +134,13 @@ def _mode_info_block(settings: dict, cert_fingerprint: str) -> str:
 
 
 def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
-                    xray_ver: str, apk_info: dict | None, flash: str | None,
+                    client_stats: dict, xray_ver: str, apk_info: dict | None, flash: str | None,
                     flash_level: str, cert_fingerprint: str) -> str:
     running = status["running"]
     mode = settings.get("mode", "ws_tls")
     rows = "".join(_client_row(c, links[c["id"]]) for c in clients) or \
+        '<tr><td colspan="5" class="empty">Пока нет клиентов</td></tr>'
+    stats_rows = "".join(_stats_row(c, client_stats.get(c["id"])) for c in clients) or \
         '<tr><td colspan="5" class="empty">Пока нет клиентов</td></tr>'
     reality_display = "" if mode == "reality" else "display:none;"
     ws_tls_display = "" if mode == "ws_tls" else "display:none;"
@@ -167,8 +203,8 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
       <label>Camouflage-домен (dest, host:port)
         <input type="text" name="reality_dest" value="{escape(settings.get('reality_dest', ''))}" placeholder="www.microsoft.com:443">
       </label>
-      <label>SNI / serverName
-        <input type="text" name="reality_server_name" value="{escape(settings.get('reality_server_name', ''))}" placeholder="www.microsoft.com">
+      <label>SNI / serverNames (через запятую, если несколько)
+        <input type="text" name="reality_server_name" value="{escape(settings.get('reality_server_name', ''))}" placeholder="www.microsoft.com, www.bing.com">
       </label>
     </div>
 
@@ -210,12 +246,38 @@ function toggleMode(mode) {{
 </section>
 
 <section class="card">
+  <h2>Статистика подключений</h2>
+  <table class="clients-table">
+    <thead><tr><th>Имя</th><th>Всего</th><th>Сегодня</th><th>Последний раз</th><th>Последний IP</th></tr></thead>
+    <tbody>{stats_rows}</tbody>
+  </table>
+  <p class="muted">Обновляется раз в минуту из access-лога xray.</p>
+</section>
+
+<section class="card">
   <h2>Пакет v2rayNG</h2>
   <form method="post" action="/apk/upload" enctype="multipart/form-data" class="apk-form">
     <input type="file" name="apk" accept=".apk" required>
     <button type="submit" class="btn">Загрузить apk</button>
   </form>
   {apk_block}
+</section>
+
+<section class="card">
+  <h2>Пароль от панели</h2>
+  <form method="post" action="/account/password" class="settings-form">
+    <label>Текущий пароль
+      <input type="password" name="current_password" required>
+    </label>
+    <label>Новый пароль
+      <input type="password" name="new_password" minlength="8" required>
+    </label>
+    <label>Повторите новый пароль
+      <input type="password" name="new_password2" minlength="8" required>
+    </label>
+    <button type="submit" class="btn">Сменить пароль</button>
+  </form>
+  <p class="muted">После смены пароля все текущие сессии (включая эту) слетят — придётся войти заново.</p>
 </section>
 
 <script>
