@@ -6,13 +6,34 @@
 #
 # Re-elevates itself with sudo if not run as root. Idempotent: safe to
 # re-run (won't touch an existing password / env file).
+#
+# The very first run relocates the checkout to /opt/blinkray regardless of
+# where it was cloned: systemd changes into WorkingDirectory as the
+# unprivileged blinkray user (not as root), so cloning into e.g. /root
+# (mode 700) makes that chdir fail with "Permission denied" no matter what
+# we chown inside the checkout — /opt is 755 by convention, so this class
+# of bug can't happen there. After the first run, keep working straight out
+# of /opt/blinkray (git pull && ./install.sh there).
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then
   exec sudo -E bash "$0" "$@"
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="/opt/blinkray"
+
+log()  { echo -e "\033[1;32m==>\033[0m $*"; }
+warn() { echo -e "\033[1;33m!!\033[0m $*" >&2; }
+
+if [ "$REPO_DIR" != "$INSTALL_DIR" ]; then
+  log "Переношу проект в ${INSTALL_DIR} (права зависимого от пользователя каталога вроде /root ломают запуск сервиса)"
+  mkdir -p "$INSTALL_DIR"
+  cp -a "${REPO_DIR}/." "${INSTALL_DIR}/"
+  exec bash "${INSTALL_DIR}/install.sh" "$@"
+fi
+
+SCRIPT_DIR="$INSTALL_DIR"
 PANEL_USER="blinkray"
 XRAY_USER="xray"
 XRAY_BIN="/usr/local/bin/xray"
@@ -23,12 +44,13 @@ PANEL_SERVICE_FILE="/etc/systemd/system/blinkray.service"
 XRAY_SERVICE_FILE="/etc/systemd/system/${XRAY_SERVICE_NAME}.service"
 DATA_DIR="${SCRIPT_DIR}/data"
 
-log()  { echo -e "\033[1;32m==>\033[0m $*"; }
-warn() { echo -e "\033[1;33m!!\033[0m $*" >&2; }
-
 log "Устанавливаю системные зависимости"
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
+  # needrestart on Ubuntu/Debian pops up an interactive "restart services?"
+  # dialog mid-install that looks exactly like a hang over SSH — silence it.
+  export NEEDRESTART_MODE=a
+  export NEEDRESTART_SUSPEND=1
   apt-get update -qq
   apt-get install -y -qq python3 python3-venv openssl curl unzip ca-certificates >/dev/null
 elif command -v dnf >/dev/null 2>&1; then
@@ -42,6 +64,7 @@ fi
 log "Создаю системных пользователей"
 id -u "$XRAY_USER" >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin "$XRAY_USER"
 id -u "$PANEL_USER" >/dev/null 2>&1 || useradd --system --home "$SCRIPT_DIR" --shell /usr/sbin/nologin "$PANEL_USER"
+usermod -d "$SCRIPT_DIR" "$PANEL_USER"
 usermod -aG "$PANEL_USER" "$XRAY_USER"
 
 if [ -x "$XRAY_BIN" ] && [ "${FORCE_XRAY_INSTALL:-0}" != "1" ]; then

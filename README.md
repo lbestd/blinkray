@@ -33,6 +33,12 @@ cd blinkray
 
 Скрипт сам, без дополнительных вопросов:
 
+- если запущен не из `/opt/blinkray` — перенесёт себя туда (`cp -a`, включая
+  `.git`) и перезапустится оттуда. Это принципиально: `systemd` делает `chdir`
+  в `WorkingDirectory` уже от имени непривилегированного пользователя
+  `blinkray`, а не root, поэтому клон в `/root/blinkray` (права `700` на
+  `/root`) не запустился бы, сколько ни меняй владельца самой папки —
+  `/opt` устраняет эту проблему раз и навсегда;
 - поставит `python3`, `venv`, `openssl`, `curl`, `unzip`;
 - создаст системных пользователей `blinkray` (панель) и `xray` (сам xray-core),
   добавит `xray` в группу `blinkray`, чтобы он мог читать сгенерированные
@@ -72,7 +78,7 @@ PANEL_PASSWORD='мой-пароль' ./install.sh
 ## Обновление
 
 ```bash
-cd blinkray
+cd /opt/blinkray   # install.sh уже перенёс код сюда при первом запуске
 git pull
 ./install.sh          # безопасно перезапускать — не трогает пароль/данные
 systemctl restart blinkray
@@ -80,10 +86,10 @@ systemctl restart blinkray
 
 ## Что где лежит после установки
 
-- Код и venv — там, куда сделали `git clone` (например `/root/blinkray` или
-  `/opt/blinkray`, если склонировали туда).
+- Код и venv — всегда `/opt/blinkray`, независимо от того, куда изначально
+  делали `git clone` (см. выше).
 - Состояние панели (настройки, список клиентов, сертификаты, apk) — в
-  `<repo>/data/`, не в git (см. `.gitignore`).
+  `/opt/blinkray/data/`, не в git (см. `.gitignore`).
 - Пароль и прочие переменные окружения — `/etc/blinkray.env`.
 - sudoers-правило — `/etc/sudoers.d/blinkray`.
 - systemd-юниты — `/etc/systemd/system/blinkray.service` и `xray.service`.
