@@ -1,0 +1,121 @@
+:root {
+  color-scheme: dark;
+  --bg: #10141c;
+  --card: #1a2130;
+  --border: #2a3346;
+  --text: #e6e9ef;
+  --muted: #8b93a7;
+  --accent: #4f8cff;
+  --accent-hover: #3f78e0;
+  --danger: #e5484d;
+  --danger-hover: #c93f43;
+  --ok: #2fb673;
+  --off: #6b7280;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding: 24px;
+}
+
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 16px; margin: 0 0 12px; color: var(--text); }
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  max-width: 900px;
+  margin: 0 auto 20px;
+}
+
+.card {
+  max-width: 900px;
+  margin: 0 auto 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+}
+
+.muted { color: var(--muted); font-size: 13px; }
+
+.badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-right: 6px;
+}
+.badge-on { background: rgba(47,182,115,0.15); color: var(--ok); }
+.badge-off { background: rgba(107,114,128,0.2); color: var(--off); }
+
+.btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 9px 16px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.btn:hover { background: var(--accent-hover); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-small { padding: 5px 10px; font-size: 12px; }
+.btn-danger { background: var(--danger); }
+.btn-danger:hover { background: var(--danger-hover); }
+
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.inline-form { display: inline-block; margin: 0; }
+
+.flash {
+  max-width: 900px;
+  margin: 0 auto 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.flash-ok { background: rgba(47,182,115,0.15); color: var(--ok); border: 1px solid rgba(47,182,115,0.3); }
+.flash-error { background: rgba(229,72,77,0.15); color: var(--danger); border: 1px solid rgba(229,72,77,0.3); }
+
+.settings-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+.settings-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.settings-form label.checkbox { flex-direction: row; align-items: center; gap: 8px; grid-column: 1 / -1; }
+.settings-form button { grid-column: 1 / -1; width: fit-content; margin-top: 4px; }
+.settings-form .full-row { grid-column: 1 / -1; }
+.settings-form .mode-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+.mode-switch { display: flex; gap: 20px; padding: 10px 0; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.mode-switch label.radio { flex-direction: row; align-items: center; gap: 6px; font-size: 14px; color: var(--text); }
+
+input[type=text], input[type=number], input[type=password], input[type=file] {
+  background: #0d1220;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.add-client-form { display: flex; gap: 8px; margin-bottom: 16px; }
+.add-client-form input { flex: 1; }
+
+.clients-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.clients-table th, .clients-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.clients-table .empty { text-align: center; color: var(--muted); padding: 20px; }
+.uuid { font-size: 11px; color: var(--muted); }
+.link-cell { display: flex; gap: 6px; min-width: 260px; }
+.link-cell input { flex: 1; font-size: 11px; }
+.actions { display: flex; gap: 6px; white-space: nowrap; }
+
+.apk-form { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+
+.login-wrap { display: flex; align-items: center; justify-content: center; min-height: 80vh; }
+.login-box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 32px; width: 300px; display: flex; flex-direction: column; gap: 12px; }
+.login-box h1 { text-align: center; margin-bottom: 8px; }
+.login-box button { margin-top: 4px; }
