@@ -279,22 +279,38 @@ async def apk_upload(request: web.Request) -> web.Response:
     if not filename.lower().endswith(".apk"):
         return _redirect_with_flash("Нужен файл .apk", "error")
 
+    # Write to a temp file and only swap it in once fully received. Mobile
+    # connections reset mid-upload in practice (seen in prod: a Chrome
+    # Android client's socket died ~50s into a POST /apk/upload with
+    # ConnectionResetError) — if we deleted the old apk up front like
+    # before, an interrupted upload left the panel with no working file at
+    # all instead of just failing the one request.
+    tmp_dest = config.APK_DIR / f".{filename}.part"
+    size = 0
+    try:
+        with open(tmp_dest, "wb") as f:
+            while True:
+                chunk = await field.read_chunk(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > config.APK_MAX_SIZE:
+                    tmp_dest.unlink(missing_ok=True)
+                    return _redirect_with_flash("Файл слишком большой", "error")
+                await to_thread(f.write, chunk)
+    except OSError:
+        # Covers a reset/aborted connection (ConnectionResetError etc. are
+        # OSError subclasses) as well as a full disk — either way, don't
+        # leave a half-written file lying around or touch the old apk.
+        tmp_dest.unlink(missing_ok=True)
+        return _redirect_with_flash(
+            "Загрузка прервалась (разрыв соединения) — прошлый файл не тронут, попробуйте ещё раз",
+            "error",
+        )
+
     for old in config.APK_DIR.glob("*.apk"):
         old.unlink()
-
-    dest = config.APK_DIR / filename
-    size = 0
-    with open(dest, "wb") as f:
-        while True:
-            chunk = await field.read_chunk(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > config.APK_MAX_SIZE:
-                f.close()
-                dest.unlink(missing_ok=True)
-                return _redirect_with_flash("Файл слишком большой", "error")
-            await to_thread(f.write, chunk)
+    tmp_dest.rename(config.APK_DIR / filename)
 
     return _redirect_with_flash(f"Файл {filename} загружен")
 
