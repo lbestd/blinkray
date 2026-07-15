@@ -68,7 +68,7 @@ def _autostart_badge(enabled: str) -> str:
     return f'<span class="badge {cls}">автозапуск: {label}</span>'
 
 
-def _client_row(client: dict, link: str, mtls: bool = False) -> str:
+def _client_card(client: dict, link: str, mtls: bool = False) -> str:
     cid = escape(client["id"])
     name = escape(client["name"])
     enabled = client.get("enabled", True)
@@ -83,41 +83,44 @@ def _client_row(client: dict, link: str, mtls: bool = False) -> str:
         # share-link) so copy-paste still works, and keep a file-download
         # alternative alongside it.
         copy_button = (
-            f'<button type="button" class="btn btn-small" '
+            f'<button type="button" class="btn" '
             f'onclick="copyCertConfig(this, \'/clients/{cid}/cert\')" '
             f'title="Копирует JSON-конфиг с сертификатом — обычная ссылка тут не подключится">'
             f'Копировать</button>'
         )
         cert_button = f'<a class="btn btn-small" href="/clients/{cid}/cert" title="Скачать тот же конфиг файлом">Сертификат</a>'
     else:
-        copy_button = '<button type="button" class="btn btn-small" onclick="copyLink(this)">Копировать</button>'
+        copy_button = '<button type="button" class="btn" onclick="copyLink(this)">Копировать</button>'
         cert_button = ""
     return f"""
-<tr>
-  <td>
-    <form method="post" action="/clients/{cid}/rename" class="inline-form rename-form">
+<div class="client-card">
+  <div class="client-header">
+    <div class="client-name-view" id="name-view-{cid}">
+      <strong>{name}</strong>
+      <button type="button" class="btn-icon" onclick="editName('{cid}')" title="Переименовать">&#9998;</button>
+      <span class="badge {state_cls}">{state_label}</span>
+    </div>
+    <form method="post" action="/clients/{cid}/rename" class="inline-form rename-form" id="name-edit-{cid}" style="display:none;">
       <input type="text" name="name" value="{name}" class="rename-input" required>
       <button type="submit" class="btn btn-small">Сохранить</button>
+      <button type="button" class="btn btn-small" onclick="cancelEditName('{cid}')">Отмена</button>
     </form>
-  </td>
-  <td><code class="uuid">{cid}</code></td>
-  <td><span class="badge {state_cls}">{state_label}</span></td>
-  <td class="actions">
-    {copy_button}
-    {cert_button}
-  </td>
-  <td class="link-cell">
+  </div>
+  <div class="client-uuid muted">UUID: <code class="uuid">{cid}</code></div>
+  <div class="client-link-row">
     <input type="text" readonly value="{escape(link)}" onclick="this.select()">
-  </td>
-  <td class="actions">
+    {copy_button}
+  </div>
+  <div class="actions">
+    {cert_button}
     <form method="post" action="/clients/{cid}/toggle" class="inline-form">
       <button type="submit" class="btn btn-small">{toggle_label}</button>
     </form>
     <form method="post" action="/clients/{cid}/delete" class="inline-form" onsubmit="return confirm('Удалить клиента {name}?')">
       <button type="submit" class="btn btn-small btn-danger">Удалить</button>
     </form>
-  </td>
-</tr>
+  </div>
+</div>
 """
 
 
@@ -177,7 +180,7 @@ def _guide_block(settings: dict, apk_info: dict | None) -> str:
 
     if mtls:
         import_step = """
-    <p><strong>а)</strong> На этой странице (с телефона или компьютера — не важно) откройте раздел «Клиенты» ниже и найдите свою строку в таблице.</p>
+    <p><strong>а)</strong> На этой странице (с телефона или компьютера — не важно) откройте раздел «Клиенты» ниже и найдите свою карточку.</p>
     <p><strong>б)</strong> Нажмите кнопку <strong>«Копировать»</strong> напротив своего имени — она скопирует в буфер обмена ваш личный конфиг с сертификатом. Если ссылку/конфиг копируете с телефона — на нём и открывайте v2rayNG дальше. Если копировали с компьютера — нажмите вместо этого кнопку <strong>«Сертификат»</strong>, она скачает файл, который нужно перекинуть на телефон (например, через Telegram «Избранное» или почту самому себе).</p>
     <p><strong>в)</strong> В v2rayNG нажмите «+» в правом верхнем углу.</p>
     <p><strong>г)</strong> Если копировали через «Копировать» — выберите пункт <strong>«Импорт конфигурации из буфера обмена»</strong> (Import config from Clipboard). Если скачивали файл через «Сертификат» — выберите <strong>«Импорт конфигурации из файла»</strong> (Import config from file) и укажите скачанный файл.</p>
@@ -185,7 +188,7 @@ def _guide_block(settings: dict, apk_info: dict | None) -> str:
 """
     else:
         import_step = """
-    <p><strong>а)</strong> На этой странице откройте раздел «Клиенты» ниже, найдите свою строку в таблице и нажмите кнопку <strong>«Копировать»</strong> напротив своего имени — скопируется ваша личная ссылка подключения (начинается с vless://).</p>
+    <p><strong>а)</strong> На этой странице откройте раздел «Клиенты» ниже, найдите свою карточку и нажмите кнопку <strong>«Копировать»</strong> — скопируется ваша личная ссылка подключения (начинается с vless://).</p>
     <p><strong>б)</strong> Если копировали с компьютера, а телефон другой — перешлите эту ссылку себе на телефон (например, через Telegram «Избранное» или почту).</p>
     <p><strong>в)</strong> Откройте v2rayNG на телефоне, нажмите «+» в правом верхнем углу, выберите <strong>«Импорт конфигурации из буфера обмена»</strong> (Import config from Clipboard). Приложение само найдёт скопированную ссылку.</p>
 """
@@ -234,8 +237,8 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
     running = status["running"]
     mode = settings.get("mode", "ws_tls")
     mtls = mode == "ws_tls" and settings.get("mtls_enabled", False)
-    rows = "".join(_client_row(c, links[c["id"]], mtls) for c in clients) or \
-        '<tr><td colspan="6" class="empty">Пока нет клиентов</td></tr>'
+    cards = "".join(_client_card(c, links[c["id"]], mtls) for c in clients) or \
+        '<p class="muted empty">Пока нет клиентов</p>'
     stats_rows = "".join(_stats_row(c, client_stats.get(c["id"])) for c in clients) or \
         '<tr><td colspan="5" class="empty">Пока нет клиентов</td></tr>'
     reality_display = "" if mode == "reality" else "display:none;"
@@ -348,12 +351,7 @@ function toggleMode(mode) {{
     <input type="text" name="name" placeholder="Имя клиента" required>
     <button type="submit" class="btn">Добавить клиента</button>
   </form>
-  <div class="table-scroll">
-    <table class="clients-table">
-      <thead><tr><th>Имя</th><th>UUID</th><th>Статус</th><th></th><th>Ссылка (для v2rayNG)</th><th></th></tr></thead>
-      <tbody>{rows}</tbody>
-    </table>
-  </div>
+  <div class="clients-list">{cards}</div>
 </section>
 
 <section class="card">
@@ -395,13 +393,25 @@ function toggleMode(mode) {{
 
 <script>
 function copyLink(btn) {{
-  const input = btn.closest('tr').querySelector('.link-cell input');
+  const input = btn.closest('.client-link-row').querySelector('input');
   input.select();
   navigator.clipboard.writeText(input.value).then(() => {{
     const old = btn.textContent;
     btn.textContent = 'Скопировано!';
     setTimeout(() => btn.textContent = old, 1200);
   }});
+}}
+
+function editName(id) {{
+  document.getElementById('name-view-' + id).style.display = 'none';
+  const form = document.getElementById('name-edit-' + id);
+  form.style.display = 'flex';
+  form.querySelector('input').focus();
+}}
+
+function cancelEditName(id) {{
+  document.getElementById('name-edit-' + id).style.display = 'none';
+  document.getElementById('name-view-' + id).style.display = '';
 }}
 
 function toggleGuide() {{

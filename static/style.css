@@ -118,11 +118,44 @@ input[type=text], input[type=number], input[type=password], input[type=file] {
 .clients-table th, .clients-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .clients-table .empty { text-align: center; color: var(--muted); padding: 20px; }
 .uuid { font-size: 11px; color: var(--muted); }
-.rename-form { display: flex; gap: 6px; min-width: 140px; }
-.rename-input { width: 110px; font-size: 13px; }
-.link-cell { display: flex; gap: 6px; min-width: 260px; }
-.link-cell input { flex: 1; font-size: 11px; }
-.actions { display: flex; gap: 6px; white-space: nowrap; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Each client gets its own card, stacked in several lines, instead of a
+   cramped single table row — the link + copy button in particular need
+   room to be genuinely readable/tappable rather than squeezed into a
+   fixed-width cell. */
+.clients-list .empty { text-align: center; padding: 20px 0 0; }
+.client-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.client-card:last-child { margin-bottom: 0; }
+.client-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.client-name-view { display: flex; align-items: center; gap: 8px; }
+.client-name-view strong { font-size: 16px; }
+.btn-icon {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.btn-icon:hover { color: var(--text); border-color: var(--accent); }
+.rename-form { display: flex; gap: 6px; flex: 1; min-width: 220px; }
+.rename-input { flex: 1; font-size: 14px; }
+.client-uuid { font-size: 12px; }
+.client-link-row { display: flex; gap: 10px; align-items: center; }
+.client-link-row input { flex: 1; font-size: 14px; padding: 10px 12px; }
+.client-link-row .btn { padding: 10px 20px; font-size: 14px; white-space: nowrap; }
 
 .apk-form { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
 
@@ -145,4 +178,7 @@ input[type=text], input[type=number], input[type=password], input[type=file] {
   .add-client-form { flex-direction: column; align-items: stretch; }
   .apk-form { flex-direction: column; align-items: stretch; }
   .login-box { width: 100%; max-width: 320px; padding: 24px; }
+  .client-link-row { flex-direction: column; align-items: stretch; }
+  .client-link-row .btn { width: 100%; }
+  .rename-form { flex-direction: column; align-items: stretch; }
 }
