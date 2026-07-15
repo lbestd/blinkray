@@ -75,9 +75,23 @@ def _client_row(client: dict, link: str, mtls: bool = False) -> str:
     state_label = "включён" if enabled else "выключен"
     state_cls = "badge-on" if enabled else "badge-off"
     toggle_label = "Выключить" if enabled else "Включить"
-    cert_button = (
-        f'<a class="btn btn-small" href="/clients/{cid}/cert">Сертификат</a>' if mtls else ""
-    )
+    if mtls:
+        # A plain vless:// link has nowhere to carry a client certificate,
+        # so once mTLS is required for this client the link alone can't
+        # authenticate — copy the full JSON config instead (v2rayNG's
+        # "Import from Clipboard" accepts a pasted config, not just a
+        # share-link) so copy-paste still works, and keep a file-download
+        # alternative alongside it.
+        copy_button = (
+            f'<button type="button" class="btn btn-small" '
+            f'onclick="copyCertConfig(this, \'/clients/{cid}/cert\')" '
+            f'title="Копирует JSON-конфиг с сертификатом — обычная ссылка тут не подключится">'
+            f'Копировать</button>'
+        )
+        cert_button = f'<a class="btn btn-small" href="/clients/{cid}/cert" title="Скачать тот же конфиг файлом">Сертификат</a>'
+    else:
+        copy_button = '<button type="button" class="btn btn-small" onclick="copyLink(this)">Копировать</button>'
+        cert_button = ""
     return f"""
 <tr>
   <td>
@@ -88,12 +102,14 @@ def _client_row(client: dict, link: str, mtls: bool = False) -> str:
   </td>
   <td><code class="uuid">{cid}</code></td>
   <td><span class="badge {state_cls}">{state_label}</span></td>
+  <td class="actions">
+    {copy_button}
+    {cert_button}
+  </td>
   <td class="link-cell">
     <input type="text" readonly value="{escape(link)}" onclick="this.select()">
   </td>
   <td class="actions">
-    <button type="button" class="btn btn-small" onclick="copyLink(this)">Копировать</button>
-    {cert_button}
     <form method="post" action="/clients/{cid}/toggle" class="inline-form">
       <button type="submit" class="btn btn-small">{toggle_label}</button>
     </form>
@@ -147,6 +163,71 @@ def _mode_info_block(settings: dict, cert_fingerprint: str) -> str:
     return f'<p class="muted">SHA-256 отпечаток сертификата xray: <code>{escape(cert_fingerprint)}</code></p>'
 
 
+def _guide_block(settings: dict, apk_info: dict | None) -> str:
+    mtls = settings.get("mode") == "ws_tls" and settings.get("mtls_enabled", False)
+
+    if apk_info:
+        step1 = """
+    <p>Откройте эту страницу панели <strong>прямо на телефоне</strong> (в браузере телефона), пролистайте вниз до раздела «Пакет v2rayNG» и нажмите кнопку <strong>«Скачать v2rayNG.apk»</strong>. Файл скачается в папку «Загрузки».</p>
+"""
+    else:
+        step1 = """
+    <p>Установите приложение <strong>v2rayNG</strong> — на телефоне откройте Google Play, найдите «v2rayNG» и нажмите «Установить». Если Google Play недоступен — попросите того, кто настраивал сервер, прислать вам apk-файл, и переходите сразу к шагу 2.</p>
+"""
+
+    if mtls:
+        import_step = """
+    <p><strong>а)</strong> На этой странице (с телефона или компьютера — не важно) откройте раздел «Клиенты» ниже и найдите свою строку в таблице.</p>
+    <p><strong>б)</strong> Нажмите кнопку <strong>«Копировать»</strong> напротив своего имени — она скопирует в буфер обмена ваш личный конфиг с сертификатом. Если ссылку/конфиг копируете с телефона — на нём и открывайте v2rayNG дальше. Если копировали с компьютера — нажмите вместо этого кнопку <strong>«Сертификат»</strong>, она скачает файл, который нужно перекинуть на телефон (например, через Telegram «Избранное» или почту самому себе).</p>
+    <p><strong>в)</strong> В v2rayNG нажмите «+» в правом верхнем углу.</p>
+    <p><strong>г)</strong> Если копировали через «Копировать» — выберите пункт <strong>«Импорт конфигурации из буфера обмена»</strong> (Import config from Clipboard). Если скачивали файл через «Сертификат» — выберите <strong>«Импорт конфигурации из файла»</strong> (Import config from file) и укажите скачанный файл.</p>
+    <p class="muted">Обычная короткая ссылка вида vless://... для вас не подойдёт — в этом режиме сервер проверяет у каждого личный сертификат, а ссылка его не содержит.</p>
+"""
+    else:
+        import_step = """
+    <p><strong>а)</strong> На этой странице откройте раздел «Клиенты» ниже, найдите свою строку в таблице и нажмите кнопку <strong>«Копировать»</strong> напротив своего имени — скопируется ваша личная ссылка подключения (начинается с vless://).</p>
+    <p><strong>б)</strong> Если копировали с компьютера, а телефон другой — перешлите эту ссылку себе на телефон (например, через Telegram «Избранное» или почту).</p>
+    <p><strong>в)</strong> Откройте v2rayNG на телефоне, нажмите «+» в правом верхнем углу, выберите <strong>«Импорт конфигурации из буфера обмена»</strong> (Import config from Clipboard). Приложение само найдёт скопированную ссылку.</p>
+"""
+
+    return f"""
+<ol class="guide-steps">
+  <li>
+    <strong>Скачайте и установите приложение v2rayNG.</strong>
+{step1}
+  </li>
+  <li>
+    <strong>Разрешите установку (если ставили через apk-файл, а не Google Play).</strong>
+    <p>При открытии скачанного файла телефон покажет предупреждение «Установка заблокирована» или «Небезопасный файл». Нажмите «Настройки» → включите «Разрешить установку из этого источника» → вернитесь назад и нажмите «Установить».</p>
+  </li>
+  <li>
+    <strong>Получите и добавьте свой личный конфиг сервера.</strong>
+{import_step}
+  </li>
+  <li>
+    <strong>Выберите сервер в списке.</strong>
+    <p>В v2rayNG появится новая строка с названием сервера — нажмите на неё один раз, слева появится отметка (кружок/галочка), что означает «выбран как активный».</p>
+  </li>
+  <li>
+    <strong>Включите VPN.</strong>
+    <p>Нажмите большую круглую кнопку с буквой «V» внизу экрана.</p>
+  </li>
+  <li>
+    <strong>Разрешите Android создать VPN-подключение.</strong>
+    <p>Появится системное окно «Запрос на подключение» / «VPN connection request» — это стандартное окно самого Android, а не наше приложение. Нажмите «ОК» / «Разрешить». Оно появляется только при первом включении.</p>
+  </li>
+  <li>
+    <strong>Проверьте, что всё работает.</strong>
+    <p>Кнопка «V» станет зелёной и покажет «Подключено» и счётчик трафика, а вверху экрана телефона в строке состояния появится значок ключа (VPN). Дополнительно можно открыть браузер и зайти на 2ip.ru — показанный там IP-адрес должен отличаться от обычного.</p>
+  </li>
+  <li>
+    <strong>Чтобы выключить VPN</strong> — снова откройте v2rayNG и нажмите ту же круглую кнопку «V».
+  </li>
+</ol>
+<p class="muted"><strong>Если не подключается:</strong> проверьте, что дата и время на телефоне выставлены автоматически и верны (для сертификатов это критично); убедитесь, что сервер запущен в разделе «Сервер» выше на этой странице; попробуйте скопировать ссылку/конфиг заново — возможно, скопировалась не полностью.</p>
+"""
+
+
 def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
                     client_stats: dict, xray_ver: str, apk_info: dict | None, flash: str | None,
                     flash_level: str, cert_fingerprint: str) -> str:
@@ -154,7 +235,7 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
     mode = settings.get("mode", "ws_tls")
     mtls = mode == "ws_tls" and settings.get("mtls_enabled", False)
     rows = "".join(_client_row(c, links[c["id"]], mtls) for c in clients) or \
-        '<tr><td colspan="5" class="empty">Пока нет клиентов</td></tr>'
+        '<tr><td colspan="6" class="empty">Пока нет клиентов</td></tr>'
     stats_rows = "".join(_stats_row(c, client_stats.get(c["id"])) for c in clients) or \
         '<tr><td colspan="5" class="empty">Пока нет клиентов</td></tr>'
     reality_display = "" if mode == "reality" else "display:none;"
@@ -176,10 +257,18 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
     body = f"""
 <header class="topbar">
   <h1>Blinkray</h1>
-  <form method="post" action="/logout"><button type="submit" class="btn btn-small">Выйти</button></form>
+  <div class="btn-row" style="margin:0;">
+    <button type="button" class="btn btn-small" onclick="toggleGuide()">Инструкция</button>
+    <form method="post" action="/logout" class="inline-form"><button type="submit" class="btn btn-small">Выйти</button></form>
+  </div>
 </header>
 
 {_flash_html(flash, flash_level)}
+
+<section class="card" id="guide" style="display:none;">
+  <h2>Как подключиться с телефона</h2>
+  {_guide_block(settings, apk_info)}
+</section>
 
 <section class="card">
   <h2>Сервер</h2>
@@ -261,7 +350,7 @@ function toggleMode(mode) {{
   </form>
   <div class="table-scroll">
     <table class="clients-table">
-      <thead><tr><th>Имя</th><th>UUID</th><th>Статус</th><th>Ссылка (для v2rayNG)</th><th></th></tr></thead>
+      <thead><tr><th>Имя</th><th>UUID</th><th>Статус</th><th></th><th>Ссылка (для v2rayNG)</th><th></th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
   </div>
@@ -311,6 +400,24 @@ function copyLink(btn) {{
   navigator.clipboard.writeText(input.value).then(() => {{
     const old = btn.textContent;
     btn.textContent = 'Скопировано!';
+    setTimeout(() => btn.textContent = old, 1200);
+  }});
+}}
+
+function toggleGuide() {{
+  const el = document.getElementById('guide');
+  const hidden = el.style.display === 'none';
+  el.style.display = hidden ? '' : 'none';
+  if (hidden) el.scrollIntoView({{behavior: 'smooth'}});
+}}
+
+function copyCertConfig(btn, url) {{
+  const old = btn.textContent;
+  fetch(url).then(r => r.text()).then(text => navigator.clipboard.writeText(text)).then(() => {{
+    btn.textContent = 'Скопировано!';
+    setTimeout(() => btn.textContent = old, 1200);
+  }}).catch(() => {{
+    btn.textContent = 'Ошибка';
     setTimeout(() => btn.textContent = old, 1200);
   }});
 }}
