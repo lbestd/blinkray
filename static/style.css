@@ -15,12 +15,15 @@
 
 * { box-sizing: border-box; }
 
+html { overflow-x: hidden; }
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
   padding: 24px;
+  overflow-x: hidden;
+  max-width: 100vw;
 }
 
 h1 { font-size: 20px; margin: 0; }
@@ -105,6 +108,12 @@ input[type=text], input[type=number], input[type=password], input[type=file] {
 .add-client-form { display: flex; gap: 8px; margin-bottom: 16px; }
 .add-client-form input { flex: 1; }
 
+/* Rows have several fixed/min-width cells (link input, UUID, actions) that
+   don't fit narrow screens — scope the horizontal scroll to the table
+   itself instead of letting it blow out the whole page (see html/body
+   overflow-x: hidden above). */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
 .clients-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .clients-table th, .clients-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .clients-table .empty { text-align: center; color: var(--muted); padding: 20px; }
@@ -121,3 +130,14 @@ input[type=text], input[type=number], input[type=password], input[type=file] {
 .login-box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 32px; width: 300px; display: flex; flex-direction: column; gap: 12px; }
 .login-box h1 { text-align: center; margin-bottom: 8px; }
 .login-box button { margin-top: 4px; }
+
+@media (max-width: 640px) {
+  body { padding: 12px; }
+  .card { padding: 14px; border-radius: 8px; }
+  .settings-form, .settings-form .mode-fields { grid-template-columns: 1fr; }
+  .mode-switch { flex-direction: column; gap: 8px; align-items: flex-start; }
+  .topbar { flex-wrap: wrap; gap: 8px; }
+  .add-client-form { flex-direction: column; align-items: stretch; }
+  .apk-form { flex-direction: column; align-items: stretch; }
+  .login-box { width: 100%; max-width: 320px; padding: 24px; }
+}

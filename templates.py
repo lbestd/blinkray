@@ -16,6 +16,16 @@ PAGE_HEAD = """<!doctype html>
 """
 
 PAGE_TAIL = """
+<script>
+// Strip ?flash=...&level=...&error=...&notice=... from the address bar once
+// shown, so refreshing (F5) re-requests the clean URL instead of re-showing
+// a stale message — and never resubmits the action that produced it (every
+// action already redirects here via POST-Redirect-GET, this just tidies up
+// what's left in the bar afterwards).
+if (window.location.search) {
+  window.history.replaceState({}, document.title, window.location.pathname);
+}
+</script>
 </body>
 </html>
 """
@@ -58,13 +68,16 @@ def _autostart_badge(enabled: str) -> str:
     return f'<span class="badge {cls}">автозапуск: {label}</span>'
 
 
-def _client_row(client: dict, link: str) -> str:
+def _client_row(client: dict, link: str, mtls: bool = False) -> str:
     cid = escape(client["id"])
     name = escape(client["name"])
     enabled = client.get("enabled", True)
     state_label = "включён" if enabled else "выключен"
     state_cls = "badge-on" if enabled else "badge-off"
     toggle_label = "Выключить" if enabled else "Включить"
+    cert_button = (
+        f'<a class="btn btn-small" href="/clients/{cid}/cert">Сертификат</a>' if mtls else ""
+    )
     return f"""
 <tr>
   <td>
@@ -77,9 +90,10 @@ def _client_row(client: dict, link: str) -> str:
   <td><span class="badge {state_cls}">{state_label}</span></td>
   <td class="link-cell">
     <input type="text" readonly value="{escape(link)}" onclick="this.select()">
-    <button type="button" class="btn btn-small" onclick="copyLink(this)">Копировать</button>
   </td>
   <td class="actions">
+    <button type="button" class="btn btn-small" onclick="copyLink(this)">Копировать</button>
+    {cert_button}
     <form method="post" action="/clients/{cid}/toggle" class="inline-form">
       <button type="submit" class="btn btn-small">{toggle_label}</button>
     </form>
@@ -138,7 +152,8 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
                     flash_level: str, cert_fingerprint: str) -> str:
     running = status["running"]
     mode = settings.get("mode", "ws_tls")
-    rows = "".join(_client_row(c, links[c["id"]]) for c in clients) or \
+    mtls = mode == "ws_tls" and settings.get("mtls_enabled", False)
+    rows = "".join(_client_row(c, links[c["id"]], mtls) for c in clients) or \
         '<tr><td colspan="5" class="empty">Пока нет клиентов</td></tr>'
     stats_rows = "".join(_stats_row(c, client_stats.get(c["id"])) for c in clients) or \
         '<tr><td colspan="5" class="empty">Пока нет клиентов</td></tr>'
@@ -219,6 +234,11 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
         <input type="checkbox" name="allow_insecure" {"checked" if settings.get('allow_insecure', True) else ""}>
         allowInsecure (нужно для самоподписного сертификата)
       </label>
+      <label class="checkbox">
+        <input type="checkbox" name="mtls_enabled" {"checked" if settings.get('mtls_enabled', False) else ""}>
+        Требовать клиентский сертификат (mTLS)
+      </label>
+      <p class="muted full-row">При включении у каждого клиента в таблице ниже появится кнопка «Сертификат» — готовый JSON-конфиг с его личным сертификатом для импорта в v2rayNG (вместо обычной ссылки).</p>
     </div>
 
     <button type="submit" class="btn">Сохранить и применить</button>
@@ -239,18 +259,22 @@ function toggleMode(mode) {{
     <input type="text" name="name" placeholder="Имя клиента" required>
     <button type="submit" class="btn">Добавить клиента</button>
   </form>
-  <table class="clients-table">
-    <thead><tr><th>Имя</th><th>UUID</th><th>Статус</th><th>Ссылка (для v2rayNG)</th><th></th></tr></thead>
-    <tbody>{rows}</tbody>
-  </table>
+  <div class="table-scroll">
+    <table class="clients-table">
+      <thead><tr><th>Имя</th><th>UUID</th><th>Статус</th><th>Ссылка (для v2rayNG)</th><th></th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </div>
 </section>
 
 <section class="card">
   <h2>Статистика подключений</h2>
-  <table class="clients-table">
-    <thead><tr><th>Имя</th><th>Всего</th><th>Сегодня</th><th>Последний раз</th><th>Последний IP</th></tr></thead>
-    <tbody>{stats_rows}</tbody>
-  </table>
+  <div class="table-scroll">
+    <table class="clients-table">
+      <thead><tr><th>Имя</th><th>Всего</th><th>Сегодня</th><th>Последний раз</th><th>Последний IP</th></tr></thead>
+      <tbody>{stats_rows}</tbody>
+    </table>
+  </div>
   <p class="muted">Обновляется раз в минуту из access-лога xray.</p>
 </section>
 
@@ -282,7 +306,7 @@ function toggleMode(mode) {{
 
 <script>
 function copyLink(btn) {{
-  const input = btn.previousElementSibling;
+  const input = btn.closest('tr').querySelector('.link-cell input');
   input.select();
   navigator.clipboard.writeText(input.value).then(() => {{
     const old = btn.textContent;

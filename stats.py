@@ -106,7 +106,7 @@ def parse_once() -> int:
 async def _loop():
     while True:
         try:
-            parse_once()
+            await asyncio.to_thread(parse_once)
         except Exception:
             log.exception("stats.parse_once failed")
         await asyncio.sleep(PARSE_INTERVAL_SECONDS)

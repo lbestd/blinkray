@@ -26,6 +26,7 @@ DEFAULT_SETTINGS = {
     "ws_path": "/ms",
     "sni": "www.microsoft.com",  # camouflage SNI presented in the TLS handshake
     "allow_insecure": True,      # needed by clients since the cert is self-signed
+    "mtls_enabled": False,       # require a per-client CA-signed cert (see ca_cert_paths)
 
     # reality mode
     "reality_dest": "www.microsoft.com:443",   # real site xray proxies the handshake to
@@ -148,10 +149,85 @@ def build_vless_link(client: dict, settings: dict) -> str:
     return f"vless://{client['id']}@{host}:{port}?{query}#{name}"
 
 
+def build_client_mtls_config(client: dict, settings: dict) -> dict:
+    """A full, standalone xray client config for this client, with its mTLS
+    cert/key embedded inline as PEM text (not file paths — v2rayNG runs on
+    Android, where a file path from the panel's server is meaningless).
+    Import it in v2rayNG via "Import config from file/clipboard"; unlike a
+    vless:// link, this is the only way to hand over a client certificate
+    since the share-link scheme has no field for one. Requires the client's
+    cert to already exist (see ensure_client_cert)."""
+    cert_path, key_path = client_cert_paths(client["id"])
+    cert_lines = cert_path.read_text().strip().splitlines()
+    key_lines = key_path.read_text().strip().splitlines()
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [
+            {"tag": "socks", "protocol": "socks", "listen": "127.0.0.1", "port": 10808,
+             "settings": {"udp": True}},
+            {"tag": "http", "protocol": "http", "listen": "127.0.0.1", "port": 10809},
+        ],
+        "outbounds": [
+            {
+                "tag": "proxy",
+                "protocol": "vless",
+                "settings": {
+                    "vnext": [{
+                        "address": settings["public_host"],
+                        "port": settings["port"],
+                        "users": [{"id": client["id"], "encryption": "none"}],
+                    }]
+                },
+                "streamSettings": {
+                    "network": "ws",
+                    "security": "tls",
+                    "tlsSettings": {
+                        "serverName": settings["sni"],
+                        "fingerprint": settings.get("fingerprint", "chrome"),
+                        "allowInsecure": bool(settings.get("allow_insecure", True)),
+                        "certificates": [{"certificate": cert_lines, "key": key_lines}],
+                    },
+                    "wsSettings": {"path": settings["ws_path"]},
+                },
+            },
+            {"tag": "direct", "protocol": "freedom"},
+        ],
+    }
+
+
 # --------------------------------------------------------- xray config.json
 
 def xray_cert_paths():
     return config.XRAY_CERT_DIR / "xray.crt", config.XRAY_CERT_DIR / "xray.key"
+
+
+def ca_cert_paths():
+    return config.XRAY_CERT_DIR / "ca.crt", config.XRAY_CERT_DIR / "ca.key"
+
+
+def client_cert_paths(client_id: str):
+    d = config.XRAY_CERT_DIR / "clients"
+    return d / f"{client_id}.crt", d / f"{client_id}.key"
+
+
+def ensure_ca() -> bool:
+    ca_cert, ca_key = ca_cert_paths()
+    return certgen.ensure_ca(ca_cert, ca_key, key_mode=0o600)
+
+
+def ensure_client_cert(client: dict) -> bool:
+    """Generate this client's mTLS cert/key, signed by our CA, if missing.
+    Requires the CA to already exist (see ensure_ca / apply_config)."""
+    ca_cert, ca_key = ca_cert_paths()
+    cert_path, key_path = client_cert_paths(client["id"])
+    return certgen.ensure_signed_cert(cert_path, key_path, cn=client["name"],
+                                       ca_cert_path=ca_cert, ca_key_path=ca_key, key_mode=0o600)
+
+
+def delete_client_cert(client_id: str) -> None:
+    cert_path, key_path = client_cert_paths(client_id)
+    cert_path.unlink(missing_ok=True)
+    key_path.unlink(missing_ok=True)
 
 
 def build_xray_config(settings: dict, clients: list[dict]) -> dict:
@@ -179,14 +255,19 @@ def build_xray_config(settings: dict, clients: list[dict]) -> dict:
             {"id": c["id"], "email": c["name"], "level": 0}
             for c in enabled
         ]
+        certificates = [{"certificateFile": str(cert_path), "keyFile": str(key_path)}]
+        tls_settings = {"certificates": certificates}
+        if mode == "ws_tls" and settings.get("mtls_enabled"):
+            ca_cert, _ = ca_cert_paths()
+            # "usage": "verify" tells xray to use this cert only to validate
+            # the client cert presented during the handshake, not to serve
+            # it — the server still presents its own leaf cert above.
+            certificates.append({"certificateFile": str(ca_cert), "usage": "verify"})
+            tls_settings["verifyClientCertificate"] = True
         stream_settings = {
             "network": "ws",
             "security": "tls",
-            "tlsSettings": {
-                "certificates": [
-                    {"certificateFile": str(cert_path), "keyFile": str(key_path)}
-                ],
-            },
+            "tlsSettings": tls_settings,
             "wsSettings": {"path": settings["ws_path"]},
         }
 
@@ -305,6 +386,8 @@ def apply_config() -> tuple[bool, str]:
         ensure_reality_keys(settings)
     else:
         ensure_xray_cert(settings)
+        if settings.get("mtls_enabled"):
+            ensure_ca()
     cfg = build_xray_config(settings, load_clients())
     write_xray_config(cfg)
     ok, output = validate_config()
@@ -325,13 +408,24 @@ def _run(cmd: list[str]) -> tuple[bool, str]:
     return ok, output
 
 
+def _unit_name() -> str:
+    # sudo matches the command line it's given *literally* against the
+    # sudoers rule — it has no idea "xray" and "xray.service" name the same
+    # systemd unit the way systemctl itself does. install.sh's sudoers rule
+    # always spells out the full "xray.service", so every sudo'd systemctl
+    # call here must too, or `-n` fails with "a password is required" even
+    # though `sudo -l` shows a matching NOPASSWD entry.
+    name = config.XRAY_SERVICE_NAME
+    return name if name.endswith(".service") else f"{name}.service"
+
+
 def _systemctl(*args: str) -> tuple[bool, str]:
-    return _run(["sudo", "-n", "systemctl", *args, config.XRAY_SERVICE_NAME])
+    return _run(["sudo", "-n", "systemctl", *args, _unit_name()])
 
 
 def service_status() -> dict:
-    active_ok, active_out = _run(["systemctl", "is-active", config.XRAY_SERVICE_NAME])
-    enabled_ok, enabled_out = _run(["systemctl", "is-enabled", config.XRAY_SERVICE_NAME])
+    active_ok, active_out = _run(["systemctl", "is-active", _unit_name()])
+    enabled_ok, enabled_out = _run(["systemctl", "is-enabled", _unit_name()])
     return {
         "active": active_out.strip() if active_out else ("active" if active_ok else "inactive"),
         "enabled": enabled_out.strip() if enabled_out else ("enabled" if enabled_ok else "disabled"),

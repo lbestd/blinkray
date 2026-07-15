@@ -1,4 +1,6 @@
+import asyncio
 import hmac
+import json
 from datetime import datetime, timezone
 from urllib.parse import quote
 
@@ -11,9 +13,21 @@ import xray_manager
 import certgen
 import stats
 
+# xray_manager/certgen call out to subprocesses (systemctl, xray, openssl) —
+# each one blocks for anywhere from a few ms up to their full timeout, and
+# this app runs a single-threaded event loop. Without to_thread, one slow
+# call (or a big file upload's chunked disk writes) stalls every other
+# request being served — including totally unrelated dashboard loads. Route
+# handlers below push that blocking work onto a worker thread instead.
+to_thread = asyncio.to_thread
+
 
 def _redirect_with_flash(msg: str, level: str = "ok") -> web.HTTPFound:
     return web.HTTPFound(f"/?flash={quote(msg)}&level={level}")
+
+
+async def _const(value):
+    return value
 
 
 def _client_stats(clients: list[dict]) -> dict:
@@ -34,13 +48,19 @@ def _client_stats(clients: list[dict]) -> dict:
 
 
 async def dashboard(request: web.Request) -> web.Response:
-    status = xray_manager.service_status()
     settings = xray_manager.load_settings()
     clients = xray_manager.load_clients()
     links = {c["id"]: xray_manager.build_vless_link(c, settings) for c in clients}
 
     cert_path, _ = xray_manager.xray_cert_paths()
-    fingerprint = certgen.cert_sha256_fingerprint(cert_path) if cert_path.exists() else "нет сертификата — сохраните настройки"
+    # Run the three subprocess-backed lookups concurrently instead of
+    # sequentially — each is its own process spawn, no reason to serialize.
+    status, xray_ver, fingerprint = await asyncio.gather(
+        to_thread(xray_manager.service_status),
+        to_thread(xray_manager.xray_version),
+        to_thread(certgen.cert_sha256_fingerprint, cert_path) if cert_path.exists()
+        else _const("нет сертификата — сохраните настройки"),
+    )
 
     apk_path = _apk_path()
     apk_info = {"name": apk_path.name, "size": apk_path.stat().st_size} if apk_path else None
@@ -51,7 +71,7 @@ async def dashboard(request: web.Request) -> web.Response:
         clients=clients,
         links=links,
         client_stats=_client_stats(clients),
-        xray_ver=xray_manager.xray_version(),
+        xray_ver=xray_ver,
         apk_info=apk_info,
         flash=request.query.get("flash"),
         flash_level=request.query.get("level", "ok"),
@@ -63,24 +83,24 @@ async def dashboard(request: web.Request) -> web.Response:
 # --------------------------------------------------------------- server control
 
 async def server_start(request: web.Request) -> web.Response:
-    ok, out = xray_manager.start_service()
+    ok, out = await to_thread(xray_manager.start_service)
     return _redirect_with_flash("Сервер запущен" if ok else f"Ошибка запуска: {out}", "ok" if ok else "error")
 
 
 async def server_stop(request: web.Request) -> web.Response:
-    ok, out = xray_manager.stop_service()
+    ok, out = await to_thread(xray_manager.stop_service)
     return _redirect_with_flash("Сервер остановлен" if ok else f"Ошибка остановки: {out}", "ok" if ok else "error")
 
 
 async def server_restart(request: web.Request) -> web.Response:
-    ok, out = xray_manager.restart_service()
+    ok, out = await to_thread(xray_manager.restart_service)
     return _redirect_with_flash("Сервер перезапущен" if ok else f"Ошибка перезапуска: {out}", "ok" if ok else "error")
 
 
 async def server_autostart(request: web.Request) -> web.Response:
     data = await request.post()
     enable = data.get("enable") == "1"
-    ok, out = xray_manager.set_autostart(enable)
+    ok, out = await to_thread(xray_manager.set_autostart, enable)
     msg = ("Автозапуск включён" if enable else "Автозапуск выключен") if ok else f"Ошибка: {out}"
     return _redirect_with_flash(msg, "ok" if ok else "error")
 
@@ -107,19 +127,20 @@ async def update_settings(request: web.Request) -> web.Response:
     settings["ws_path"] = str(data.get("ws_path", settings["ws_path"])).strip() or "/ms"
     settings["sni"] = str(data.get("sni", settings["sni"])).strip() or settings["sni"]
     settings["allow_insecure"] = data.get("allow_insecure") is not None
+    settings["mtls_enabled"] = data.get("mtls_enabled") is not None
 
     settings["reality_dest"] = str(data.get("reality_dest", settings["reality_dest"])).strip() or settings["reality_dest"]
     settings["reality_server_name"] = str(data.get("reality_server_name", settings["reality_server_name"])).strip() or settings["reality_server_name"]
 
     xray_manager.save_settings(settings)
 
-    ok, out = xray_manager.apply_config()
+    ok, out = await to_thread(xray_manager.apply_config)
     if not ok:
         return _redirect_with_flash(f"Конфиг сохранён, но не прошёл проверку xray: {out}", "error")
 
-    status = xray_manager.service_status()
+    status = await to_thread(xray_manager.service_status)
     if status["running"]:
-        restarted, rout = xray_manager.restart_service()
+        restarted, rout = await to_thread(xray_manager.restart_service)
         if not restarted:
             return _redirect_with_flash(f"Настройки сохранены, но перезапуск не удался: {rout}", "error")
         return _redirect_with_flash("Настройки сохранены и применены (сервер перезапущен)")
@@ -130,13 +151,13 @@ async def rotate_reality_keys(request: web.Request) -> web.Response:
     settings = xray_manager.load_settings()
     if settings.get("mode") != "reality":
         return _redirect_with_flash("Сначала переключитесь в режим REALITY", "error")
-    xray_manager.rotate_reality_keys(settings)
+    await to_thread(xray_manager.rotate_reality_keys, settings)
 
-    ok, out = xray_manager.apply_config()
+    ok, out = await to_thread(xray_manager.apply_config)
     if not ok:
         return _redirect_with_flash(f"Ключи перегенерированы, но конфиг не прошёл проверку: {out}", "error")
-    if xray_manager.service_status()["running"]:
-        xray_manager.restart_service()
+    if (await to_thread(xray_manager.service_status))["running"]:
+        await to_thread(xray_manager.restart_service)
     return _redirect_with_flash("Ключи REALITY перегенерированы — старые ссылки клиентов больше не работают")
 
 
@@ -148,29 +169,30 @@ async def clients_add(request: web.Request) -> web.Response:
     if not name:
         return _redirect_with_flash("Укажите имя клиента", "error")
     xray_manager.add_client(name)
-    ok, out = xray_manager.apply_config()
+    ok, out = await to_thread(xray_manager.apply_config)
     if not ok:
         return _redirect_with_flash(f"Клиент добавлен, но конфиг не прошёл проверку: {out}", "error")
-    if xray_manager.service_status()["running"]:
-        xray_manager.restart_service()
+    if (await to_thread(xray_manager.service_status))["running"]:
+        await to_thread(xray_manager.restart_service)
     return _redirect_with_flash(f"Клиент «{name}» добавлен")
 
 
 async def clients_delete(request: web.Request) -> web.Response:
     client_id = request.match_info["client_id"]
     xray_manager.delete_client(client_id)
-    xray_manager.apply_config()
-    if xray_manager.service_status()["running"]:
-        xray_manager.restart_service()
+    xray_manager.delete_client_cert(client_id)
+    await to_thread(xray_manager.apply_config)
+    if (await to_thread(xray_manager.service_status))["running"]:
+        await to_thread(xray_manager.restart_service)
     return _redirect_with_flash("Клиент удалён")
 
 
 async def clients_toggle(request: web.Request) -> web.Response:
     client_id = request.match_info["client_id"]
     xray_manager.toggle_client(client_id)
-    xray_manager.apply_config()
-    if xray_manager.service_status()["running"]:
-        xray_manager.restart_service()
+    await to_thread(xray_manager.apply_config)
+    if (await to_thread(xray_manager.service_status))["running"]:
+        await to_thread(xray_manager.restart_service)
     return _redirect_with_flash("Статус клиента изменён")
 
 
@@ -185,8 +207,36 @@ async def clients_rename(request: web.Request) -> web.Response:
     # Just relabels the client in xray's config (the "email" field, used for
     # logs only) — regenerate the file for next restart, but no need to
     # bump active connections over a cosmetic rename.
-    xray_manager.apply_config()
+    await to_thread(xray_manager.apply_config)
     return _redirect_with_flash(f"Клиент переименован в «{name}»")
+
+
+async def clients_cert_download(request: web.Request) -> web.Response:
+    client_id = request.match_info["client_id"]
+    settings = xray_manager.load_settings()
+    if settings.get("mode") != "ws_tls" or not settings.get("mtls_enabled"):
+        raise web.HTTPNotFound(text="mTLS не включён в настройках")
+
+    clients = xray_manager.load_clients()
+    client = next((c for c in clients if c["id"] == client_id), None)
+    if client is None:
+        raise web.HTTPNotFound(text="клиент не найден")
+
+    await to_thread(xray_manager.ensure_ca)
+    await to_thread(xray_manager.ensure_client_cert, client)
+    cfg = await to_thread(xray_manager.build_client_mtls_config, client, settings)
+
+    body = json.dumps(cfg, indent=2, ensure_ascii=False)
+    # Client names are user-supplied (often Cyrillic) — plain filename="..."
+    # isn't safe/correct for non-ASCII, so fall back to a fixed ASCII name
+    # and additionally offer the real one via the RFC 5987 filename* form.
+    encoded_name = quote(f"{client['name']}-blinkray.json", safe="")
+    disposition = f"attachment; filename=\"client-blinkray.json\"; filename*=UTF-8''{encoded_name}"
+    return web.Response(
+        text=body,
+        content_type="application/json",
+        headers={"Content-Disposition": disposition},
+    )
 
 
 # ------------------------------------------------------------------- account
@@ -244,7 +294,7 @@ async def apk_upload(request: web.Request) -> web.Response:
                 f.close()
                 dest.unlink(missing_ok=True)
                 return _redirect_with_flash("Файл слишком большой", "error")
-            f.write(chunk)
+            await to_thread(f.write, chunk)
 
     return _redirect_with_flash(f"Файл {filename} загружен")
 
@@ -286,6 +336,7 @@ def setup_routes(app: web.Application):
     app.router.add_post("/clients/{client_id}/delete", clients_delete)
     app.router.add_post("/clients/{client_id}/toggle", clients_toggle)
     app.router.add_post("/clients/{client_id}/rename", clients_rename)
+    app.router.add_get("/clients/{client_id}/cert", clients_cert_download)
 
     app.router.add_post("/apk/upload", apk_upload)
     app.router.add_get("/apk/download", apk_download)

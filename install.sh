@@ -229,7 +229,12 @@ EnvironmentFile=${ENV_FILE}
 ExecStart=${SCRIPT_DIR}/venv/bin/python3 ${SCRIPT_DIR}/app.py
 Restart=on-failure
 RestartSec=2
-NoNewPrivileges=true
+# No NoNewPrivileges here on purpose: the panel manages xray.service via
+# "sudo -n systemctl ..." (see xray_manager.py + the sudoers rule below).
+# NoNewPrivileges blocks a process from ever re-gaining privileges through
+# exec of a setuid binary — which is exactly what sudo is, so the two are
+# fundamentally incompatible. With it set, every start/stop/restart from
+# the UI fails with "sudo: The 'no new privileges' flag is set...".
 
 [Install]
 WantedBy=multi-user.target
