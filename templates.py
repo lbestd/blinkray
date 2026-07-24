@@ -171,7 +171,7 @@ def _guide_block(settings: dict, apk_info: dict | None) -> str:
 
     if apk_info:
         step1 = """
-    <p>Откройте эту страницу панели <strong>прямо на телефоне</strong> (в браузере телефона), пролистайте вниз до раздела «Пакет v2rayNG» и нажмите кнопку <strong>«Скачать v2rayNG.apk»</strong>. Файл скачается в папку «Загрузки».</p>
+    <p>Откройте эту страницу панели <strong>прямо на телефоне</strong> (в браузере телефона) и в блоке «Моё подключение» выше нажмите кнопку <strong>«Скачать v2rayNG.apk»</strong>. Файл скачается в папку «Загрузки».</p>
 """
     else:
         step1 = """
@@ -180,15 +180,13 @@ def _guide_block(settings: dict, apk_info: dict | None) -> str:
 
     if mtls:
         import_step = """
-    <p><strong>а)</strong> На этой странице (с телефона или компьютера — не важно) откройте раздел «Клиенты» ниже и найдите свою карточку.</p>
-    <p><strong>б)</strong> Нажмите кнопку <strong>«Копировать»</strong> напротив своего имени — она скопирует в буфер обмена ваш личный конфиг с сертификатом. Если ссылку/конфиг копируете с телефона — на нём и открывайте v2rayNG дальше. Если копировали с компьютера — нажмите вместо этого кнопку <strong>«Сертификат»</strong>, она скачает файл, который нужно перекинуть на телефон (например, через Telegram «Избранное» или почту самому себе).</p>
-    <p><strong>в)</strong> В v2rayNG нажмите «+» в правом верхнем углу.</p>
-    <p><strong>г)</strong> Если копировали через «Копировать» — выберите пункт <strong>«Импорт конфигурации из буфера обмена»</strong> (Import config from Clipboard). Если скачивали файл через «Сертификат» — выберите <strong>«Импорт конфигурации из файла»</strong> (Import config from file) и укажите скачанный файл.</p>
+    <p><strong>а)</strong> Выше на этой странице, в блоке «Моё подключение», выберите своё имя в списке и нажмите <strong>«Копировать профиль»</strong> — скопируется ваш личный конфиг с сертификатом. Делайте это на том же телефоне, где будете открывать v2rayNG.</p>
+    <p><strong>б)</strong> В v2rayNG нажмите «+» в правом верхнем углу и выберите <strong>«Импорт конфигурации из буфера обмена»</strong> (Import config from Clipboard).</p>
     <p class="muted">Обычная короткая ссылка вида vless://... для вас не подойдёт — в этом режиме сервер проверяет у каждого личный сертификат, а ссылка его не содержит.</p>
 """
     else:
         import_step = """
-    <p><strong>а)</strong> На этой странице откройте раздел «Клиенты» ниже, найдите свою карточку и нажмите кнопку <strong>«Копировать»</strong> — скопируется ваша личная ссылка подключения (начинается с vless://).</p>
+    <p><strong>а)</strong> Выше на этой странице, в блоке «Моё подключение», выберите своё имя в списке и нажмите <strong>«Копировать профиль»</strong> — скопируется ваша личная ссылка подключения (начинается с vless://).</p>
     <p><strong>б)</strong> Если копировали с компьютера, а телефон другой — перешлите эту ссылку себе на телефон (например, через Telegram «Избранное» или почту).</p>
     <p><strong>в)</strong> Откройте v2rayNG на телефоне, нажмите «+» в правом верхнем углу, выберите <strong>«Импорт конфигурации из буфера обмена»</strong> (Import config from Clipboard). Приложение само найдёт скопированную ссылку.</p>
 """
@@ -227,7 +225,31 @@ def _guide_block(settings: dict, apk_info: dict | None) -> str:
     <strong>Чтобы выключить VPN</strong> — снова откройте v2rayNG и нажмите ту же круглую кнопку «V».
   </li>
 </ol>
-<p class="muted"><strong>Если не подключается:</strong> проверьте, что дата и время на телефоне выставлены автоматически и верны (для сертификатов это критично); убедитесь, что сервер запущен в разделе «Сервер» выше на этой странице; попробуйте скопировать ссылку/конфиг заново — возможно, скопировалась не полностью.</p>
+<p class="muted"><strong>Если не подключается:</strong> проверьте, что дата и время на телефоне выставлены автоматически и верны (для сертификатов это критично); убедитесь, что сервер запущен (спросите того, кто настраивал сервер, или проверьте на вкладке «Управление»); попробуйте скопировать ссылку/конфиг заново — возможно, скопировалась не полностью.</p>
+"""
+
+
+def _client_picker_block(clients: list, links: dict, apk_info: dict | None) -> str:
+    if not clients:
+        picker = '<p class="muted">Клиенты ещё не добавлены — перейдите на вкладку «Управление», чтобы добавить.</p>'
+    else:
+        options = "".join(
+            f'<option value="{escape(c["id"])}" data-link="{escape(links[c["id"]])}">{escape(c["name"])}</option>'
+            for c in clients
+        )
+        picker = f"""
+<div class="client-picker-row">
+  <select id="client-picker">{options}</select>
+  <button type="button" class="btn" onclick="copyPickedProfile(this)">Копировать профиль</button>
+</div>
+"""
+    apk_button = (
+        '<a class="btn" href="/apk/download">Скачать v2rayNG.apk</a>' if apk_info
+        else '<p class="muted">Файл v2rayNG ещё не загружен — попросите того, кто настраивал сервер, загрузить его на вкладке «Управление».</p>'
+    )
+    return f"""
+{picker}
+{apk_button}
 """
 
 
@@ -260,18 +282,31 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
     body = f"""
 <header class="topbar">
   <h1>Blinkray</h1>
-  <div class="btn-row" style="margin:0;">
-    <button type="button" class="btn btn-small" onclick="toggleGuide()">Инструкция</button>
-    <form method="post" action="/logout" class="inline-form"><button type="submit" class="btn btn-small">Выйти</button></form>
-  </div>
+  <form method="post" action="/logout" class="inline-form"><button type="submit" class="btn btn-small">Выйти</button></form>
 </header>
 
 {_flash_html(flash, flash_level)}
 
-<section class="card" id="guide" style="display:none;">
+<div class="tabs">
+  <button type="button" class="tab-btn active" data-tab="client" onclick="switchTab('client')">Клиенту</button>
+  <button type="button" class="tab-btn" data-tab="admin" onclick="switchTab('admin')">Управление</button>
+</div>
+
+<div id="tab-client" class="tab-panel active">
+
+<section class="card">
+  <h2>Моё подключение</h2>
+  {_client_picker_block(clients, links, apk_info)}
+</section>
+
+<section class="card">
   <h2>Как подключиться с телефона</h2>
   {_guide_block(settings, apk_info)}
 </section>
+
+</div>
+
+<div id="tab-admin" class="tab-panel">
 
 <section class="card">
   <h2>Сервер</h2>
@@ -330,20 +365,13 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
         <input type="checkbox" name="mtls_enabled" {"checked" if settings.get('mtls_enabled', False) else ""}>
         Требовать клиентский сертификат (mTLS)
       </label>
-      <p class="muted full-row">При включении у каждого клиента в таблице ниже появится кнопка «Сертификат» — готовый JSON-конфиг с его личным сертификатом для импорта в v2rayNG (вместо обычной ссылки).</p>
+      <p class="muted full-row">При включении у каждого клиента в разделе «Клиенты» появится кнопка «Сертификат» — готовый JSON-конфиг с его личным сертификатом для импорта в v2rayNG (вместо обычной ссылки).</p>
     </div>
 
     <button type="submit" class="btn">Сохранить и применить</button>
   </form>
   {_mode_info_block(settings, cert_fingerprint)}
 </section>
-
-<script>
-function toggleMode(mode) {{
-  document.getElementById('fields-reality').style.display = mode === 'reality' ? '' : 'none';
-  document.getElementById('fields-ws_tls').style.display = mode === 'ws_tls' ? '' : 'none';
-}}
-</script>
 
 <section class="card">
   <h2>Клиенты</h2>
@@ -391,7 +419,19 @@ function toggleMode(mode) {{
   <p class="muted">После смены пароля все текущие сессии (включая эту) слетят — придётся войти заново.</p>
 </section>
 
+</div>
+
 <script>
+function switchTab(name) {{
+  document.querySelectorAll('.tab-panel').forEach(el => el.classList.toggle('active', el.id === 'tab-' + name));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.toggle('active', el.dataset.tab === name));
+}}
+
+function toggleMode(mode) {{
+  document.getElementById('fields-reality').style.display = mode === 'reality' ? '' : 'none';
+  document.getElementById('fields-ws_tls').style.display = mode === 'ws_tls' ? '' : 'none';
+}}
+
 function copyLink(btn) {{
   const input = btn.closest('.client-link-row').querySelector('input');
   input.select();
@@ -414,13 +454,6 @@ function cancelEditName(id) {{
   document.getElementById('name-view-' + id).style.display = '';
 }}
 
-function toggleGuide() {{
-  const el = document.getElementById('guide');
-  const hidden = el.style.display === 'none';
-  el.style.display = hidden ? '' : 'none';
-  if (hidden) el.scrollIntoView({{behavior: 'smooth'}});
-}}
-
 function copyCertConfig(btn, url) {{
   const old = btn.textContent;
   fetch(url).then(r => r.text()).then(text => navigator.clipboard.writeText(text)).then(() => {{
@@ -430,6 +463,21 @@ function copyCertConfig(btn, url) {{
     btn.textContent = 'Ошибка';
     setTimeout(() => btn.textContent = old, 1200);
   }});
+}}
+
+const MTLS_ENABLED = {"true" if mtls else "false"};
+
+function copyPickedProfile(btn) {{
+  const sel = document.getElementById('client-picker');
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt) return;
+  const old = btn.textContent;
+  const finish = (ok) => {{ btn.textContent = ok ? 'Скопировано!' : 'Ошибка'; setTimeout(() => btn.textContent = old, 1200); }};
+  if (MTLS_ENABLED) {{
+    fetch('/clients/' + opt.value + '/cert').then(r => r.text()).then(text => navigator.clipboard.writeText(text)).then(() => finish(true)).catch(() => finish(false));
+  }} else {{
+    navigator.clipboard.writeText(opt.dataset.link).then(() => finish(true)).catch(() => finish(false));
+  }}
 }}
 </script>
 """
