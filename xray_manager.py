@@ -17,6 +17,9 @@ import certgen
 
 DEFAULT_SETTINGS = {
     "mode": "ws_tls",        # "ws_tls" or "reality"
+    "server_name": "",       # shown to clients — used as the profile's display
+                              # name (remarks) in the JSON config, so imported
+                              # entries aren't a bare timestamp in v2rayNG
     "public_host": "",       # IP or domain clients connect to, e.g. 185.114.72.195
     "port": 443,
     "fingerprint": "chrome",  # client-side uTLS fingerprint, used by both modes
@@ -149,18 +152,49 @@ def build_vless_link(client: dict, settings: dict) -> str:
     return f"vless://{client['id']}@{host}:{port}?{query}#{name}"
 
 
-def build_client_mtls_config(client: dict, settings: dict) -> dict:
-    """A full, standalone xray client config for this client, with its mTLS
-    cert/key embedded inline as PEM text (not file paths — v2rayNG runs on
-    Android, where a file path from the panel's server is meaningless).
-    Import it in v2rayNG via "Import config from file/clipboard"; unlike a
-    vless:// link, this is the only way to hand over a client certificate
-    since the share-link scheme has no field for one. Requires the client's
-    cert to already exist (see ensure_client_cert)."""
-    cert_path, key_path = client_cert_paths(client["id"])
-    cert_lines = cert_path.read_text().strip().splitlines()
-    key_lines = key_path.read_text().strip().splitlines()
+def build_client_json_config(client: dict, settings: dict) -> dict:
+    """A full, standalone xray client config for this client (ws_tls mode
+    only). Newer xray-core releases (confirmed against the 26.2.6 build
+    running in production) hard-reject any config containing the old
+    "allowInsecure" field — it was removed in favor of pinning the server's
+    self-signed leaf cert by its SHA-256 fingerprint instead, so that's what
+    we embed here (verified end-to-end against the live server: a real xray
+    client using this exact field connected and proxied traffic
+    successfully, while allowInsecure made it refuse to even start). A plain
+    vless:// link has no field for this pin (or for a client certificate),
+    so this JSON config is the only reliable way to hand over a working
+    profile — import it in v2rayNG via "Import config from file/clipboard".
+    When mTLS is enabled, the client's own CA-signed cert/key are embedded
+    inline as PEM text too (requires ensure_client_cert to have run first);
+    otherwise the connection relies on the VLESS UUID alone, same as before.
+
+    The top-level "routing" key below is a no-op (no rules) but must be
+    present: v2rayNG's clipboard-paste import only recognizes a pasted blob
+    as a custom config at all if it contains "inbounds", "outbounds" *and*
+    "routing" — confirmed by reading its parseCustomConfigServer() source.
+    Without it the paste is silently ignored (looks like a generic import
+    error), even though the config itself is otherwise fully valid.
+
+    "remarks" sets the profile's display name in v2rayNG's server list —
+    read from CustomFmt.parse(): it uses fullConfig.remarks if present, else
+    falls back to the current timestamp, which is what clients were seeing
+    (a bare number like "1785584568599") before this field existed."""
+    cert_path, _ = xray_cert_paths()
+    server_name = settings.get("server_name", "").strip()
+    remarks = f"{server_name} — {client['name']}" if server_name else client["name"]
+    tls_settings = {
+        "serverName": settings["sni"],
+        "fingerprint": settings.get("fingerprint", "chrome"),
+        "pinnedPeerCertSha256": certgen.cert_sha256_fingerprint(cert_path),
+    }
+    if settings.get("mtls_enabled"):
+        client_cert_path, client_key_path = client_cert_paths(client["id"])
+        tls_settings["certificates"] = [{
+            "certificate": client_cert_path.read_text().strip().splitlines(),
+            "key": client_key_path.read_text().strip().splitlines(),
+        }]
     return {
+        "remarks": remarks,
         "log": {"loglevel": "warning"},
         "inbounds": [
             {"tag": "socks", "protocol": "socks", "listen": "127.0.0.1", "port": 10808,
@@ -181,17 +215,13 @@ def build_client_mtls_config(client: dict, settings: dict) -> dict:
                 "streamSettings": {
                     "network": "ws",
                     "security": "tls",
-                    "tlsSettings": {
-                        "serverName": settings["sni"],
-                        "fingerprint": settings.get("fingerprint", "chrome"),
-                        "allowInsecure": bool(settings.get("allow_insecure", True)),
-                        "certificates": [{"certificate": cert_lines, "key": key_lines}],
-                    },
+                    "tlsSettings": tls_settings,
                     "wsSettings": {"path": settings["ws_path"]},
                 },
             },
             {"tag": "direct", "protocol": "freedom"},
         ],
+        "routing": {"domainStrategy": "AsIs", "rules": []},
     }
 
 

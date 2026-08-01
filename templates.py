@@ -68,27 +68,29 @@ def _autostart_badge(enabled: str) -> str:
     return f'<span class="badge {cls}">автозапуск: {label}</span>'
 
 
-def _client_card(client: dict, link: str, mtls: bool = False) -> str:
+def _client_card(client: dict, link: str, json_profile: bool = False) -> str:
     cid = escape(client["id"])
     name = escape(client["name"])
     enabled = client.get("enabled", True)
     state_label = "включён" if enabled else "выключен"
     state_cls = "badge-on" if enabled else "badge-off"
     toggle_label = "Выключить" if enabled else "Включить"
-    if mtls:
-        # A plain vless:// link has nowhere to carry a client certificate,
-        # so once mTLS is required for this client the link alone can't
-        # authenticate — copy the full JSON config instead (v2rayNG's
-        # "Import from Clipboard" accepts a pasted config, not just a
-        # share-link) so copy-paste still works, and keep a file-download
+    if json_profile:
+        # ws_tls uses a self-signed cert, and current xray-core builds
+        # hard-reject the old allowInsecure field a plain vless:// link
+        # relies on (confirmed against production's own xray-core and
+        # against a live test connection) — only a full JSON config with
+        # the cert pinned by its SHA-256 hash still works, so copy that
+        # instead of the link (v2rayNG's "Import from Clipboard" accepts a
+        # pasted config, not just a share-link), with a file-download
         # alternative alongside it.
         copy_button = (
             f'<button type="button" class="btn" '
             f'onclick="copyCertConfig(this, \'/clients/{cid}/cert\')" '
-            f'title="Копирует JSON-конфиг с сертификатом — обычная ссылка тут не подключится">'
+            f'title="Копирует рабочий JSON-конфиг — обычная ссылка тут больше не подключится">'
             f'Копировать</button>'
         )
-        cert_button = f'<a class="btn btn-small" href="/clients/{cid}/cert" title="Скачать тот же конфиг файлом">Сертификат</a>'
+        cert_button = f'<a class="btn btn-small" href="/clients/{cid}/cert" title="Скачать тот же конфиг файлом">Профиль</a>'
     else:
         copy_button = '<button type="button" class="btn" onclick="copyLink(this)">Копировать</button>'
         cert_button = ""
@@ -167,7 +169,8 @@ def _mode_info_block(settings: dict, cert_fingerprint: str) -> str:
 
 
 def _guide_block(settings: dict, apk_info: dict | None) -> str:
-    mtls = settings.get("mode") == "ws_tls" and settings.get("mtls_enabled", False)
+    mode = settings.get("mode", "ws_tls")
+    mtls = mode == "ws_tls" and settings.get("mtls_enabled", False)
 
     if apk_info:
         step1 = """
@@ -178,11 +181,14 @@ def _guide_block(settings: dict, apk_info: dict | None) -> str:
     <p>Установите приложение <strong>v2rayNG</strong> — на телефоне откройте Google Play, найдите «v2rayNG» и нажмите «Установить». Если Google Play недоступен — попросите того, кто настраивал сервер, прислать вам apk-файл, и переходите сразу к шагу 2.</p>
 """
 
-    if mtls:
-        import_step = """
-    <p><strong>а)</strong> Выше на этой странице, в блоке «Моё подключение», выберите своё имя в списке и нажмите <strong>«Копировать профиль»</strong> — скопируется ваш личный конфиг с сертификатом. Делайте это на том же телефоне, где будете открывать v2rayNG.</p>
+    if mode == "ws_tls":
+        cert_note = (
+            " с вашим личным сертификатом" if mtls else ""
+        )
+        import_step = f"""
+    <p><strong>а)</strong> Выше на этой странице, в блоке «Моё подключение», выберите своё имя в списке и нажмите <strong>«Копировать профиль»</strong> — скопируется рабочий конфиг подключения{cert_note}. Делайте это на том же телефоне, где будете открывать v2rayNG.</p>
     <p><strong>б)</strong> В v2rayNG нажмите «+» в правом верхнем углу и выберите <strong>«Импорт конфигурации из буфера обмена»</strong> (Import config from Clipboard).</p>
-    <p class="muted">Обычная короткая ссылка вида vless://... для вас не подойдёт — в этом режиме сервер проверяет у каждого личный сертификат, а ссылка его не содержит.</p>
+    <p class="muted">Обычная короткая ссылка вида vless://... для вас не подойдёт — текущие версии v2rayNG её не примут, поэтому мы копируем полный конфиг-файл вместо неё.</p>
 """
     else:
         import_step = """
@@ -258,8 +264,8 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
                     flash_level: str, cert_fingerprint: str) -> str:
     running = status["running"]
     mode = settings.get("mode", "ws_tls")
-    mtls = mode == "ws_tls" and settings.get("mtls_enabled", False)
-    cards = "".join(_client_card(c, links[c["id"]], mtls) for c in clients) or \
+    json_profile = mode == "ws_tls"
+    cards = "".join(_client_card(c, links[c["id"]], json_profile) for c in clients) or \
         '<p class="muted empty">Пока нет клиентов</p>'
     stats_rows = "".join(_stats_row(c, client_stats.get(c["id"])) for c in clients) or \
         '<tr><td colspan="5" class="empty">Пока нет клиентов</td></tr>'
@@ -331,6 +337,9 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
       <label class="radio"><input type="radio" name="mode" value="ws_tls" {"checked" if mode == "ws_tls" else ""} onchange="toggleMode(this.value)"> VLESS + WS + TLS</label>
     </div>
 
+    <label>Название сервера (для имени профиля в приложении клиента)
+      <input type="text" name="server_name" value="{escape(settings.get('server_name', ''))}" placeholder="Мой VPN">
+    </label>
     <label>Публичный адрес сервера (IP или домен)
       <input type="text" name="public_host" value="{escape(settings['public_host'])}" placeholder="1.2.3.4" required>
     </label>
@@ -358,14 +367,10 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
         <input type="text" name="sni" value="{escape(settings['sni'])}">
       </label>
       <label class="checkbox">
-        <input type="checkbox" name="allow_insecure" {"checked" if settings.get('allow_insecure', True) else ""}>
-        allowInsecure (нужно для самоподписного сертификата)
-      </label>
-      <label class="checkbox">
         <input type="checkbox" name="mtls_enabled" {"checked" if settings.get('mtls_enabled', False) else ""}>
         Требовать клиентский сертификат (mTLS)
       </label>
-      <p class="muted full-row">При включении у каждого клиента в разделе «Клиенты» появится кнопка «Сертификат» — готовый JSON-конфиг с его личным сертификатом для импорта в v2rayNG (вместо обычной ссылки).</p>
+      <p class="muted full-row">Сертификат сервера самоподписной — вместо обычной ссылки каждому клиенту выдаётся готовый JSON-конфиг с прикреплённым отпечатком сертификата (кнопка «Профиль»/«Копировать» в разделе «Клиенты»); при включении mTLS в этот же конфиг добавляется ещё и личный сертификат клиента.</p>
     </div>
 
     <button type="submit" class="btn">Сохранить и применить</button>
@@ -465,7 +470,7 @@ function copyCertConfig(btn, url) {{
   }});
 }}
 
-const MTLS_ENABLED = {"true" if mtls else "false"};
+const JSON_PROFILE_MODE = {"true" if json_profile else "false"};
 
 function copyPickedProfile(btn) {{
   const sel = document.getElementById('client-picker');
@@ -473,7 +478,7 @@ function copyPickedProfile(btn) {{
   if (!opt) return;
   const old = btn.textContent;
   const finish = (ok) => {{ btn.textContent = ok ? 'Скопировано!' : 'Ошибка'; setTimeout(() => btn.textContent = old, 1200); }};
-  if (MTLS_ENABLED) {{
+  if (JSON_PROFILE_MODE) {{
     fetch('/clients/' + opt.value + '/cert').then(r => r.text()).then(text => navigator.clipboard.writeText(text)).then(() => finish(true)).catch(() => finish(false));
   }} else {{
     navigator.clipboard.writeText(opt.dataset.link).then(() => finish(true)).catch(() => finish(false));

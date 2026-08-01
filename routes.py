@@ -120,13 +120,13 @@ async def update_settings(request: web.Request) -> web.Response:
         return _redirect_with_flash("Некорректный режим", "error")
 
     settings["mode"] = mode
+    settings["server_name"] = str(data.get("server_name", "")).strip()
     settings["public_host"] = str(data.get("public_host", "")).strip()
     settings["port"] = port
     settings["fingerprint"] = str(data.get("fingerprint", "chrome")).strip() or "chrome"
 
     settings["ws_path"] = str(data.get("ws_path", settings["ws_path"])).strip() or "/ms"
     settings["sni"] = str(data.get("sni", settings["sni"])).strip() or settings["sni"]
-    settings["allow_insecure"] = data.get("allow_insecure") is not None
     settings["mtls_enabled"] = data.get("mtls_enabled") is not None
 
     settings["reality_dest"] = str(data.get("reality_dest", settings["reality_dest"])).strip() or settings["reality_dest"]
@@ -214,17 +214,23 @@ async def clients_rename(request: web.Request) -> web.Response:
 async def clients_cert_download(request: web.Request) -> web.Response:
     client_id = request.match_info["client_id"]
     settings = xray_manager.load_settings()
-    if settings.get("mode") != "ws_tls" or not settings.get("mtls_enabled"):
-        raise web.HTTPNotFound(text="mTLS не включён в настройках")
+    if settings.get("mode") != "ws_tls":
+        raise web.HTTPNotFound(text="доступно только в режиме WS+TLS")
 
     clients = xray_manager.load_clients()
     client = next((c for c in clients if c["id"] == client_id), None)
     if client is None:
         raise web.HTTPNotFound(text="клиент не найден")
 
-    await to_thread(xray_manager.ensure_ca)
-    await to_thread(xray_manager.ensure_client_cert, client)
-    cfg = await to_thread(xray_manager.build_client_mtls_config, client, settings)
+    # Every ws_tls client needs this JSON config now, not just mTLS ones —
+    # the plain vless:// link's allowInsecure param no longer loads on
+    # current xray-core builds (see build_client_json_config), so this is
+    # the only working way to hand over a self-signed-cert profile.
+    await to_thread(xray_manager.ensure_xray_cert, settings)
+    if settings.get("mtls_enabled"):
+        await to_thread(xray_manager.ensure_ca)
+        await to_thread(xray_manager.ensure_client_cert, client)
+    cfg = await to_thread(xray_manager.build_client_json_config, client, settings)
 
     body = json.dumps(cfg, indent=2, ensure_ascii=False)
     # Client names are user-supplied (often Cyrillic) — plain filename="..."
