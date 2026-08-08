@@ -49,6 +49,7 @@ def _client_stats(clients: list[dict]) -> dict:
 
 async def dashboard(request: web.Request) -> web.Response:
     settings = xray_manager.load_settings()
+    xray_manager.ensure_client_link_token(settings)
     clients = xray_manager.load_clients()
     links = {c["id"]: xray_manager.build_vless_link(c, settings) for c in clients}
 
@@ -76,6 +77,7 @@ async def dashboard(request: web.Request) -> web.Response:
         flash=request.query.get("flash"),
         flash_level=request.query.get("level", "ok"),
         cert_fingerprint=fingerprint,
+        client_link_token=settings["client_link_token"],
     )
     return web.Response(text=html, content_type="text/html")
 
@@ -140,11 +142,18 @@ async def update_settings(request: web.Request) -> web.Response:
 
     status = await to_thread(xray_manager.service_status)
     if status["running"]:
-        restarted, rout = await to_thread(xray_manager.restart_service)
-        if not restarted:
-            return _redirect_with_flash(f"Настройки сохранены, но перезапуск не удался: {rout}", "error")
-        return _redirect_with_flash("Настройки сохранены и применены (сервер перезапущен)")
-    return _redirect_with_flash("Настройки сохранены и применены")
+        applied, rout = await to_thread(xray_manager.restart_service)
+        verb, participle = "перезапуск", "перезапущен"
+    else:
+        # First-ever save on a fresh install (or after the service was
+        # stopped) — previously this branch did nothing but still claimed
+        # "применены", leaving the server silently off with no way to tell
+        # from the flash message alone that nothing was actually listening.
+        applied, rout = await to_thread(xray_manager.start_service)
+        verb, participle = "запуск", "запущен"
+    if not applied:
+        return _redirect_with_flash(f"Настройки сохранены, но {verb} не удался: {rout}", "error")
+    return _redirect_with_flash(f"Настройки сохранены и применены (сервер {participle})")
 
 
 async def rotate_reality_keys(request: web.Request) -> web.Response:
@@ -211,9 +220,7 @@ async def clients_rename(request: web.Request) -> web.Response:
     return _redirect_with_flash(f"Клиент переименован в «{name}»")
 
 
-async def clients_cert_download(request: web.Request) -> web.Response:
-    client_id = request.match_info["client_id"]
-    settings = xray_manager.load_settings()
+async def _cert_response(client_id: str, settings: dict) -> web.Response:
     if settings.get("mode") != "ws_tls":
         raise web.HTTPNotFound(text="доступно только в режиме WS+TLS")
 
@@ -243,6 +250,54 @@ async def clients_cert_download(request: web.Request) -> web.Response:
         content_type="application/json",
         headers={"Content-Disposition": disposition},
     )
+
+
+async def clients_cert_download(request: web.Request) -> web.Response:
+    client_id = request.match_info["client_id"]
+    settings = xray_manager.load_settings()
+    return await _cert_response(client_id, settings)
+
+
+def _check_client_token(request: web.Request, settings: dict) -> None:
+    token = request.match_info.get("token", "")
+    real = settings.get("client_link_token", "")
+    # A missing/empty real token must never validate — hmac.compare_digest
+    # on two empty strings returns True, which would let an empty token in
+    # the URL through.
+    if not real or not hmac.compare_digest(token, real):
+        raise web.HTTPNotFound()
+
+
+async def client_view(request: web.Request) -> web.Response:
+    settings = xray_manager.load_settings()
+    _check_client_token(request, settings)
+    token = request.match_info["token"]
+
+    clients = xray_manager.load_clients()
+    links = {c["id"]: xray_manager.build_vless_link(c, settings) for c in clients}
+    apk_path = _apk_path()
+    apk_info = {"name": apk_path.name, "size": apk_path.stat().st_size} if apk_path else None
+
+    html = templates.client_page(settings=settings, clients=clients, links=links, apk_info=apk_info, token=token)
+    return web.Response(text=html, content_type="text/html")
+
+
+async def client_cert_download(request: web.Request) -> web.Response:
+    settings = xray_manager.load_settings()
+    _check_client_token(request, settings)
+    return await _cert_response(request.match_info["client_id"], settings)
+
+
+async def client_apk_download(request: web.Request) -> web.Response:
+    settings = xray_manager.load_settings()
+    _check_client_token(request, settings)
+    return await apk_download(request)
+
+
+async def rotate_client_link(request: web.Request) -> web.Response:
+    settings = xray_manager.load_settings()
+    xray_manager.rotate_client_link_token(settings)
+    return _redirect_with_flash("Ссылка для клиентов перегенерирована — старая больше не работает")
 
 
 # ------------------------------------------------------------------- account
@@ -353,6 +408,7 @@ def setup_routes(app: web.Application):
 
     app.router.add_post("/settings", update_settings)
     app.router.add_post("/settings/rotate-reality", rotate_reality_keys)
+    app.router.add_post("/settings/rotate-client-link", rotate_client_link)
 
     app.router.add_post("/clients/add", clients_add)
     app.router.add_post("/clients/{client_id}/delete", clients_delete)
@@ -363,6 +419,12 @@ def setup_routes(app: web.Application):
     app.router.add_post("/apk/upload", apk_upload)
     app.router.add_get("/apk/download", apk_download)
     app.router.add_post("/apk/delete", apk_delete)
+
+    # No-password client link — see auth.py's auth_middleware exemption for
+    # /c/ and _check_client_token for how the secret is verified.
+    app.router.add_get("/c/{token}", client_view)
+    app.router.add_get("/c/{token}/clients/{client_id}/cert", client_cert_download)
+    app.router.add_get("/c/{token}/apk", client_apk_download)
 
     app.router.add_post("/account/password", change_password)
 

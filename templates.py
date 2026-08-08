@@ -1,5 +1,6 @@
 """Tiny HTML templating with plain f-strings (no Jinja2 dependency).
 All user-controlled values are passed through html.escape()."""
+import json
 from datetime import datetime
 from html import escape
 from urllib.parse import quote
@@ -168,7 +169,7 @@ def _mode_info_block(settings: dict, cert_fingerprint: str) -> str:
     return f'<p class="muted">SHA-256 отпечаток сертификата xray: <code>{escape(cert_fingerprint)}</code></p>'
 
 
-def _guide_block(settings: dict, apk_info: dict | None) -> str:
+def _guide_block(settings: dict, apk_info: dict | None, *, admin_hint: bool = True) -> str:
     mode = settings.get("mode", "ws_tls")
     mtls = mode == "ws_tls" and settings.get("mtls_enabled", False)
 
@@ -231,13 +232,18 @@ def _guide_block(settings: dict, apk_info: dict | None) -> str:
     <strong>Чтобы выключить VPN</strong> — снова откройте v2rayNG и нажмите ту же круглую кнопку «V».
   </li>
 </ol>
-<p class="muted"><strong>Если не подключается:</strong> проверьте, что дата и время на телефоне выставлены автоматически и верны (для сертификатов это критично); убедитесь, что сервер запущен (спросите того, кто настраивал сервер, или проверьте на вкладке «Управление»); попробуйте скопировать ссылку/конфиг заново — возможно, скопировалась не полностью.</p>
+<p class="muted"><strong>Если не подключается:</strong> проверьте, что дата и время на телефоне выставлены автоматически и верны (для сертификатов это критично); убедитесь, что сервер запущен ({"спросите того, кто настраивал сервер, или проверьте на вкладке «Управление»" if admin_hint else "спросите того, кто настраивал сервер"}); попробуйте скопировать ссылку/конфиг заново — возможно, скопировалась не полностью.</p>
 """
 
 
-def _client_picker_block(clients: list, links: dict, apk_info: dict | None) -> str:
+def _client_picker_block(clients: list, links: dict, apk_info: dict | None, *,
+                          apk_url: str = "/apk/download", admin_hint: bool = True) -> str:
     if not clients:
-        picker = '<p class="muted">Клиенты ещё не добавлены — перейдите на вкладку «Управление», чтобы добавить.</p>'
+        empty_hint = (
+            "перейдите на вкладку «Управление», чтобы добавить" if admin_hint
+            else "попросите того, кто настраивал сервер, добавить вас"
+        )
+        picker = f'<p class="muted">Клиенты ещё не добавлены — {empty_hint}.</p>'
     else:
         options = "".join(
             f'<option value="{escape(c["id"])}" data-link="{escape(links[c["id"]])}">{escape(c["name"])}</option>'
@@ -249,19 +255,69 @@ def _client_picker_block(clients: list, links: dict, apk_info: dict | None) -> s
   <button type="button" class="btn" onclick="copyPickedProfile(this)">Копировать профиль</button>
 </div>
 """
-    apk_button = (
-        '<a class="btn" href="/apk/download">Скачать v2rayNG.apk</a>' if apk_info
-        else '<p class="muted">Файл v2rayNG ещё не загружен — попросите того, кто настраивал сервер, загрузить его на вкладке «Управление».</p>'
-    )
+    if apk_info:
+        apk_button = f'<a class="btn" href="{escape(apk_url)}">Скачать v2rayNG.apk</a>'
+    else:
+        apk_hint = (
+            "загрузить его на вкладке «Управление»" if admin_hint
+            else "загрузить его"
+        )
+        apk_button = f'<p class="muted">Файл v2rayNG ещё не загружен — попросите того, кто настраивал сервер, {apk_hint}.</p>'
     return f"""
 {picker}
 {apk_button}
 """
 
 
+def client_page(*, settings: dict, clients: list, links: dict, apk_info: dict | None, token: str) -> str:
+    """The no-password /c/<token> view — same content as the dashboard's
+    "Клиенту" tab (picker + guide), but standalone: no header/logout/admin
+    tab, and every fetch URL is scoped under the token prefix so it works
+    without a session cookie (see _check_client_token in routes.py)."""
+    mode = settings.get("mode", "ws_tls")
+    json_profile = mode == "ws_tls"
+    cert_prefix = f"/c/{token}/clients/"
+    title = escape(settings.get("server_name") or "Blinkray")
+
+    body = f"""
+<header class="topbar">
+  <h1>{title}</h1>
+</header>
+
+<section class="card">
+  <h2>Моё подключение</h2>
+  {_client_picker_block(clients, links, apk_info, apk_url=f"/c/{token}/apk", admin_hint=False)}
+</section>
+
+<section class="card">
+  <h2>Как подключиться с телефона</h2>
+  {_guide_block(settings, apk_info, admin_hint=False)}
+</section>
+
+<script>
+const JSON_PROFILE_MODE = {"true" if json_profile else "false"};
+const CERT_URL_PREFIX = {json.dumps(cert_prefix)};
+
+function copyPickedProfile(btn) {{
+  const sel = document.getElementById('client-picker');
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt) return;
+  const old = btn.textContent;
+  const finish = (ok) => {{ btn.textContent = ok ? 'Скопировано!' : 'Ошибка'; setTimeout(() => btn.textContent = old, 1200); }};
+  if (JSON_PROFILE_MODE) {{
+    fetch(CERT_URL_PREFIX + opt.value + '/cert').then(r => r.text()).then(text => navigator.clipboard.writeText(text)).then(() => finish(true)).catch(() => finish(false));
+  }} else {{
+    navigator.clipboard.writeText(opt.dataset.link).then(() => finish(true)).catch(() => finish(false));
+  }}
+}}
+</script>
+"""
+    return PAGE_HEAD.format(title=f"{settings.get('server_name') or 'Blinkray'} — подключение") + body + PAGE_TAIL
+
+
 def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
                     client_stats: dict, xray_ver: str, apk_info: dict | None, flash: str | None,
-                    flash_level: str, cert_fingerprint: str) -> str:
+                    flash_level: str, cert_fingerprint: str, client_link_token: str) -> str:
     running = status["running"]
     mode = settings.get("mode", "ws_tls")
     json_profile = mode == "ws_tls"
@@ -327,6 +383,18 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
       <button type="submit" class="btn btn-small">{'Выключить автозапуск' if status['enabled']=='enabled' else 'Включить автозапуск'}</button>
     </form>
   </div>
+</section>
+
+<section class="card">
+  <h2>Ссылка для клиентов</h2>
+  <p class="muted">Отправьте её тем, кому нужно подключиться — открывается сразу раздел «Моё подключение», без пароля от панели.</p>
+  <div class="client-link-row">
+    <input type="text" id="client-link-input" readonly onclick="this.select()">
+    <button type="button" class="btn" onclick="copyClientLink(this)">Копировать</button>
+  </div>
+  <form method="post" action="/settings/rotate-client-link" class="inline-form" onsubmit="return confirm('Старая ссылка перестанет работать. Продолжить?')">
+    <button type="submit" class="btn btn-small btn-danger">Перегенерировать ссылку</button>
+  </form>
 </section>
 
 <section class="card">
@@ -483,6 +551,21 @@ function copyPickedProfile(btn) {{
   }} else {{
     navigator.clipboard.writeText(opt.dataset.link).then(() => finish(true)).catch(() => finish(false));
   }}
+}}
+
+const CLIENT_LINK_TOKEN = {json.dumps(client_link_token)};
+const clientLinkInput = document.getElementById('client-link-input');
+if (clientLinkInput) clientLinkInput.value = window.location.origin + '/c/' + CLIENT_LINK_TOKEN;
+
+function copyClientLink(btn) {{
+  const old = btn.textContent;
+  navigator.clipboard.writeText(clientLinkInput.value).then(() => {{
+    btn.textContent = 'Скопировано!';
+    setTimeout(() => btn.textContent = old, 1200);
+  }}).catch(() => {{
+    btn.textContent = 'Ошибка';
+    setTimeout(() => btn.textContent = old, 1200);
+  }});
 }}
 </script>
 """

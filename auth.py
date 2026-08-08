@@ -112,7 +112,11 @@ def is_valid_session(value: str | None) -> bool:
 
 @web.middleware
 async def auth_middleware(request: web.Request, handler):
-    if request.path in PUBLIC_PATHS or request.path.startswith("/static/"):
+    # /c/<token>/... is the no-password client link — it carries its own
+    # secret in the URL (checked inside the route handlers themselves via
+    # hmac.compare_digest), so it's exempt from the session-cookie check the
+    # same way /static/ is.
+    if request.path in PUBLIC_PATHS or request.path.startswith("/static/") or request.path.startswith("/c/"):
         return await handler(request)
 
     cookie = request.cookies.get(SESSION_COOKIE)

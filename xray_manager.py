@@ -20,6 +20,9 @@ DEFAULT_SETTINGS = {
     "server_name": "",       # shown to clients — used as the profile's display
                               # name (remarks) in the JSON config, so imported
                               # entries aren't a bare timestamp in v2rayNG
+    "client_link_token": "",  # secret path segment for /c/<token> — lets
+                               # clients reach the picker/guide without the
+                               # panel password (see ensure_client_link_token)
     "public_host": "",       # IP or domain clients connect to, e.g. 185.114.72.195
     "port": 443,
     "fingerprint": "chrome",  # client-side uTLS fingerprint, used by both modes
@@ -107,6 +110,25 @@ def rename_client(client_id: str, new_name: str) -> bool:
     if found:
         save_clients(clients)
     return found
+
+
+# --------------------------------------------------------- client link token
+
+def ensure_client_link_token(settings: dict) -> bool:
+    """Generate the secret /c/<token> path segment once, if missing. Kept in
+    settings.json like the REALITY keys, so it survives restarts."""
+    if settings.get("client_link_token"):
+        return False
+    settings["client_link_token"] = secrets.token_urlsafe(24)
+    save_settings(settings)
+    return True
+
+
+def rotate_client_link_token(settings: dict) -> None:
+    """Invalidate the current client link (e.g. after it leaked) and issue a
+    fresh one."""
+    settings["client_link_token"] = secrets.token_urlsafe(24)
+    save_settings(settings)
 
 
 # ------------------------------------------------------------- vless links
