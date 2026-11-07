@@ -5,6 +5,7 @@ from aiohttp import web
 
 import config
 import certgen
+import api
 import auth
 import routes
 import stats
@@ -17,6 +18,7 @@ def create_app() -> web.Application:
     app = web.Application(middlewares=[auth.auth_middleware])
     auth.setup_auth_routes(app)
     routes.setup_routes(app)
+    api.setup_api_routes(app)
     app.on_startup.append(stats.start)
     app.on_cleanup.append(stats.stop)
     return app

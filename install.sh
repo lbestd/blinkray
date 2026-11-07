@@ -146,15 +146,18 @@ EOF
 chmod 600 "$ENV_FILE"
 chown "${PANEL_USER}:${PANEL_USER}" "$ENV_FILE"
 
-log "Настраиваю sudoers (право панели управлять xray.service без пароля)"
+log "Настраиваю sudoers (право панели управлять xray.service и обновлять себя без пароля)"
+chmod 750 "${SCRIPT_DIR}/tools/self_update.sh"
 cat > "$SUDOERS_FILE" <<EOF
 Cmnd_Alias BLINKRAY_XRAY = /usr/bin/systemctl start ${XRAY_SERVICE_NAME}.service, \\
     /usr/bin/systemctl stop ${XRAY_SERVICE_NAME}.service, \\
     /usr/bin/systemctl restart ${XRAY_SERVICE_NAME}.service, \\
     /usr/bin/systemctl enable ${XRAY_SERVICE_NAME}.service, \\
     /usr/bin/systemctl disable ${XRAY_SERVICE_NAME}.service
+Cmnd_Alias BLINKRAY_UPDATE = ${SCRIPT_DIR}/tools/self_update.sh check, \\
+    ${SCRIPT_DIR}/tools/self_update.sh apply
 
-${PANEL_USER} ALL=(root) NOPASSWD: BLINKRAY_XRAY
+${PANEL_USER} ALL=(root) NOPASSWD: BLINKRAY_XRAY, BLINKRAY_UPDATE
 EOF
 chmod 440 "$SUDOERS_FILE"
 visudo -cf "$SUDOERS_FILE" >/dev/null
@@ -259,9 +262,17 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 EOF
 
-log "Перечитываю systemd и запускаю панель"
+log "Перечитываю systemd и (пере)запускаю панель"
 systemctl daemon-reload
-systemctl enable --now blinkray.service
+systemctl enable blinkray.service
+# "enable --now" is a no-op on an already-running service — re-running this
+# script after a `git pull` would leave the old code running in memory
+# forever despite fresh files on disk (bit us in production: install.sh
+# updated routes.py/templates.py but the panel kept serving the version
+# from 6 days earlier). `restart` always picks up whatever's on disk now,
+# and on a service that isn't running yet it just starts it — same as
+# "enable --now" would have.
+systemctl restart blinkray.service
 
 sleep 1
 if systemctl is-active --quiet blinkray.service; then

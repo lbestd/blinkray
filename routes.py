@@ -65,6 +65,7 @@ async def dashboard(request: web.Request) -> web.Response:
 
     apk_path = _apk_path()
     apk_info = {"name": apk_path.name, "size": apk_path.stat().st_size} if apk_path else None
+    version = await to_thread(xray_manager.current_version)
 
     html = templates.dashboard_page(
         status=status,
@@ -78,6 +79,8 @@ async def dashboard(request: web.Request) -> web.Response:
         flash_level=request.query.get("level", "ok"),
         cert_fingerprint=fingerprint,
         client_link_token=settings["client_link_token"],
+        version=version,
+        api_token=await to_thread(auth.api_token),
     )
     return web.Response(text=html, content_type="text/html")
 
@@ -300,6 +303,39 @@ async def rotate_client_link(request: web.Request) -> web.Response:
     return _redirect_with_flash("Ссылка для клиентов перегенерирована — старая больше не работает")
 
 
+async def rotate_api_token(request: web.Request) -> web.Response:
+    await to_thread(auth.rotate_api_token)
+    return _redirect_with_flash("API-токен перегенерирован — обновите его в центральной панели")
+
+
+# ------------------------------------------------------------------- update
+
+async def update_check(request: web.Request) -> web.Response:
+    ok, out = await to_thread(xray_manager.check_for_update)
+    if not ok:
+        return _redirect_with_flash(f"Не удалось проверить обновления: {out}", "error")
+    out = out.strip()
+    if out.startswith("UP_TO_DATE"):
+        return _redirect_with_flash("Установлена последняя версия")
+    if out.startswith("BEHIND"):
+        _, count, msg = out.split(" ", 2) if out.count(" ") >= 2 else (out, "?", "")
+        return _redirect_with_flash(f"Доступно обновление: новых коммитов — {count} (последний: «{msg}»)")
+    return _redirect_with_flash(f"Неожиданный ответ при проверке обновлений: {out}", "error")
+
+
+async def update_apply(request: web.Request) -> web.Response:
+    ok, out = await to_thread(xray_manager.apply_update)
+    if not ok:
+        return _redirect_with_flash(f"Обновление не удалось: {out}", "error")
+    out = out.strip()
+    if out.startswith("ALREADY_UP_TO_DATE"):
+        return _redirect_with_flash("Уже последняя версия — обновлять нечего")
+    if out.startswith("UPDATED"):
+        newcommit = out.split(" ", 1)[1] if " " in out else "?"
+        return _redirect_with_flash(f"Обновлено до {newcommit} — панель перезапускается, обновите страницу через несколько секунд")
+    return _redirect_with_flash(f"Неожиданный ответ при обновлении: {out}", "error")
+
+
 # ------------------------------------------------------------------- account
 
 async def change_password(request: web.Request) -> web.Response:
@@ -409,6 +445,9 @@ def setup_routes(app: web.Application):
     app.router.add_post("/settings", update_settings)
     app.router.add_post("/settings/rotate-reality", rotate_reality_keys)
     app.router.add_post("/settings/rotate-client-link", rotate_client_link)
+    app.router.add_post("/settings/rotate-api-token", rotate_api_token)
+    app.router.add_post("/update/check", update_check)
+    app.router.add_post("/update/apply", update_apply)
 
     app.router.add_post("/clients/add", clients_add)
     app.router.add_post("/clients/{client_id}/delete", clients_delete)

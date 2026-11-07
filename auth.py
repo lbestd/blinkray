@@ -7,6 +7,7 @@ state is ever stored client-side beyond the expiry timestamp.
 import hmac
 import hashlib
 import os
+import secrets
 import time
 from urllib.parse import quote
 
@@ -88,6 +89,32 @@ def rotate_secret() -> None:
     _SECRET = secret
 
 
+# ------------------------------------------------------------- API token
+
+def api_token() -> str:
+    """Bearer token for /api/v1/* (central multi-server dashboard).
+    Generated once and persisted, like the session secret."""
+    if config.API_TOKEN_FILE.exists():
+        token = config.API_TOKEN_FILE.read_text().strip()
+        if token:
+            return token
+    return rotate_api_token()
+
+
+def rotate_api_token() -> str:
+    token = secrets.token_urlsafe(32)
+    config.API_TOKEN_FILE.write_text(token)
+    config.API_TOKEN_FILE.chmod(0o600)
+    return token
+
+
+def _valid_api_request(request: web.Request) -> bool:
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return False
+    return hmac.compare_digest(header[len("Bearer "):].strip().encode(), api_token().encode())
+
+
 def _sign(expiry: int) -> str:
     msg = str(expiry).encode()
     return hmac.new(_secret(), msg, hashlib.sha256).hexdigest()
@@ -117,6 +144,14 @@ async def auth_middleware(request: web.Request, handler):
     # hmac.compare_digest), so it's exempt from the session-cookie check the
     # same way /static/ is.
     if request.path in PUBLIC_PATHS or request.path.startswith("/static/") or request.path.startswith("/c/"):
+        return await handler(request)
+
+    # Machine API: token only, never the session cookie (and vice versa —
+    # the token doesn't open the HTML panel), so a leaked token can't be
+    # used to change settings/clients/password through the web forms.
+    if request.path.startswith("/api/v1/"):
+        if not _valid_api_request(request):
+            raise web.HTTPUnauthorized(text="Invalid API token")
         return await handler(request)
 
     cookie = request.cookies.get(SESSION_COOKIE)

@@ -325,6 +325,19 @@ def build_xray_config(settings: dict, clients: list[dict]) -> dict:
 
     return {
         "log": {"loglevel": "warning", "access": str(config.XRAY_ACCESS_LOG)},
+        # Local gRPC StatsService (127.0.0.1 only) — per-client byte
+        # counters, read and reset every minute by stats.py via
+        # `xray api statsquery`. Users are keyed by "email" (= client name).
+        "api": {
+            "tag": "api",
+            "listen": f"127.0.0.1:{config.XRAY_API_PORT}",
+            "services": ["StatsService"],
+        },
+        "stats": {},
+        "policy": {
+            "levels": {"0": {"statsUserUplink": True, "statsUserDownlink": True}},
+            "system": {"statsInboundUplink": True, "statsInboundDownlink": True},
+        },
         "inbounds": [
             {
                 "tag": "vless-in",
@@ -344,6 +357,38 @@ def build_xray_config(settings: dict, clients: list[dict]) -> dict:
             {"tag": "blocked", "protocol": "blackhole"},
         ],
     }
+
+
+def query_traffic(reset: bool = True) -> tuple[bool, dict | str]:
+    """Read (and by default reset) xray's byte counters. Returns
+    (True, {"users": {email: {"up", "down"}}, "inbound": {"up", "down"}})
+    or (False, error text) — e.g. when the running config predates the
+    "api"/"stats" sections (re-apply the config + restart xray to fix)."""
+    cmd = [config.XRAY_BIN, "api", "statsquery", f"--server=127.0.0.1:{config.XRAY_API_PORT}"]
+    if reset:
+        cmd.append("-reset")
+    ok, out = _run(cmd, timeout=10)
+    if not ok:
+        return False, out
+    try:
+        data = json.loads(out) if out.strip() else {}
+    except json.JSONDecodeError:
+        return False, f"unparseable statsquery output: {out[:200]!r}"
+    users: dict[str, dict] = {}
+    inbound = {"up": 0, "down": 0}
+    for item in data.get("stat") or []:
+        parts = str(item.get("name", "")).split(">>>")
+        if len(parts) != 4 or parts[2] != "traffic":
+            continue
+        kind, name, _, direction = parts
+        # protobuf JSON renders int64 as a string, and omits zero values.
+        value = int(item.get("value") or 0)
+        key = "up" if direction == "uplink" else "down"
+        if kind == "user":
+            users.setdefault(name, {"up": 0, "down": 0})[key] += value
+        elif kind == "inbound" and name == "vless-in":
+            inbound[key] += value
+    return True, {"users": users, "inbound": inbound}
 
 
 def write_xray_config(cfg: dict) -> None:
@@ -448,9 +493,9 @@ def apply_config() -> tuple[bool, str]:
 
 # --------------------------------------------------------------- systemctl
 
-def _run(cmd: list[str]) -> tuple[bool, str]:
+def _run(cmd: list[str], timeout: int = 20) -> tuple[bool, str]:
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError as e:
         return False, str(e)
     except subprocess.TimeoutExpired:
@@ -504,3 +549,37 @@ def set_autostart(enabled: bool) -> tuple[bool, str]:
 def xray_version() -> str:
     ok, out = _run([config.XRAY_BIN, "version"])
     return out.splitlines()[0] if ok and out else "unknown"
+
+
+# ------------------------------------------------------------- self-update
+
+def current_version() -> dict:
+    """Local git HEAD, read straight from the checkout — no network call,
+    safe to run on every dashboard load."""
+    ok, out = _run(["git", "-C", str(config.BASE_DIR), "log", "-1", "--format=%h|%s|%ci"])
+    if not ok or not out:
+        return {"hash": "unknown", "message": "", "date": ""}
+    h, _, rest = out.partition("|")
+    msg, _, date = rest.partition("|")
+    return {"hash": h, "message": msg, "date": date}
+
+
+def _update_script() -> str:
+    return str(config.BASE_DIR / "tools" / "self_update.sh")
+
+
+def check_for_update() -> tuple[bool, str]:
+    """git fetch + compare against origin/main. Runs via sudo as root (see
+    install.sh's BLINKRAY_UPDATE rule) because the panel's own unprivileged
+    user has no GitHub credentials of its own — only root's, set up
+    out-of-band on each server, actually reach the private repo."""
+    return _run(["sudo", "-n", _update_script(), "check"], timeout=60)
+
+
+def apply_update() -> tuple[bool, str]:
+    """git reset --hard origin/main + reinstall requirements + restart the
+    panel — see tools/self_update.sh for the actual steps (also root, same
+    reason as check_for_update). The restart happens in the background a
+    second after this returns, so the caller gets to send its HTTP response
+    first instead of being killed mid-request."""
+    return _run(["sudo", "-n", _update_script(), "apply"], timeout=120)

@@ -12,6 +12,10 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 CLIENTS_FILE = DATA_DIR / "clients.json"
 SECRET_FILE = DATA_DIR / "secret.key"
 STATS_FILE = DATA_DIR / "stats.json"
+# Bearer token for /api/v1/* — lets a central dashboard (several Blinkray
+# servers managed from one place) talk to this panel without the password.
+# Generated on first use, shown on the dashboard's "Управление" tab.
+API_TOKEN_FILE = DATA_DIR / "api_token"
 
 XRAY_LOG_DIR = XRAY_DIR / "logs"
 XRAY_ACCESS_LOG = XRAY_LOG_DIR / "access.log"
@@ -34,6 +38,9 @@ XRAY_BIN = os.environ.get("XRAY_BIN", "/usr/local/bin/xray")
 XRAY_CONFIG_PATH = Path(os.environ.get("XRAY_CONFIG_PATH", str(XRAY_DIR / "config.json")))
 XRAY_CERT_DIR = Path(os.environ.get("XRAY_CERT_DIR", str(XRAY_DIR / "certs")))
 XRAY_SERVICE_NAME = os.environ.get("XRAY_SERVICE_NAME", "xray")
+# Local-only port of xray-core's gRPC API (StatsService), used to read
+# per-client byte counters. Bound to 127.0.0.1 in the generated config.
+XRAY_API_PORT = int(os.environ.get("XRAY_API_PORT", "10085"))
 
 APK_MAX_SIZE = int(os.environ.get("PANEL_APK_MAX_SIZE", str(300 * 1024 * 1024)))
 

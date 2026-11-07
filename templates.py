@@ -317,7 +317,8 @@ function copyPickedProfile(btn) {{
 
 def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
                     client_stats: dict, xray_ver: str, apk_info: dict | None, flash: str | None,
-                    flash_level: str, cert_fingerprint: str, client_link_token: str) -> str:
+                    flash_level: str, cert_fingerprint: str, client_link_token: str, version: dict,
+                    api_token: str = "") -> str:
     running = status["running"]
     mode = settings.get("mode", "ws_tls")
     json_profile = mode == "ws_tls"
@@ -490,6 +491,31 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
     <button type="submit" class="btn">Сменить пароль</button>
   </form>
   <p class="muted">После смены пароля все текущие сессии (включая эту) слетят — придётся войти заново.</p>
+</section>
+
+<section class="card">
+  <h2>Центральное управление (API)</h2>
+  <p class="muted">Токен для центральной панели, которая управляет несколькими серверами сразу. Даёт доступ к статусу, статистике, перезапуску xray и обновлению — но не к клиентам и настройкам.</p>
+  <div class="client-link-row">
+    <input type="text" id="api-token-input" readonly value="{escape(api_token)}" onclick="this.select()">
+    <button type="button" class="btn" onclick="navigator.clipboard.writeText(document.getElementById('api-token-input').value).then(() => {{ this.textContent = 'Скопировано'; }})">Копировать</button>
+  </div>
+  <form method="post" action="/settings/rotate-api-token" class="inline-form" onsubmit="return confirm('Старый токен перестанет работать. Продолжить?')">
+    <button type="submit" class="btn btn-small btn-danger">Перегенерировать токен</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Версия</h2>
+  <p class="muted">Текущий коммит: <code class="uuid">{escape(version['hash'])}</code> — {escape(version['message'])} <span class="muted">({escape(version['date'])})</span></p>
+  <div class="btn-row">
+    <form method="post" action="/update/check" class="inline-form">
+      <button type="submit" class="btn btn-small">Проверить обновления</button>
+    </form>
+    <form method="post" action="/update/apply" class="inline-form" onsubmit="return confirm('Обновить панель до последней версии с GitHub? Панель перезапустится, VPN-сервер (xray) это не затронет.')">
+      <button type="submit" class="btn btn-small">Обновить</button>
+    </form>
+  </div>
 </section>
 
 </div>
