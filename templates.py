@@ -154,7 +154,7 @@ def _stats_row(client: dict, entry: dict | None) -> str:
 
 
 def _mode_info_block(settings: dict, cert_fingerprint: str) -> str:
-    if settings.get("mode") == "reality":
+    if settings.get("mode") in ("reality", "reality_xhttp"):
         pubkey = settings.get("reality_public_key") or ""
         short_id = settings.get("reality_short_id") or ""
         if not pubkey:
@@ -326,7 +326,8 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
         '<p class="muted empty">Пока нет клиентов</p>'
     stats_rows = "".join(_stats_row(c, client_stats.get(c["id"])) for c in clients) or \
         '<tr><td colspan="5" class="empty">Пока нет клиентов</td></tr>'
-    reality_display = "" if mode == "reality" else "display:none;"
+    reality_display = "" if mode in ("reality", "reality_xhttp") else "display:none;"
+    xhttp_display = "" if mode == "reality_xhttp" else "display:none;"
     ws_tls_display = "" if mode == "ws_tls" else "display:none;"
 
     apk_block = ""
@@ -402,7 +403,8 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
   <h2>Настройки подключения</h2>
   <form method="post" action="/settings" class="settings-form">
     <div class="mode-switch full-row">
-      <label class="radio"><input type="radio" name="mode" value="reality" {"checked" if mode == "reality" else ""} onchange="toggleMode(this.value)"> VLESS + REALITY</label>
+      <label class="radio"><input type="radio" name="mode" value="reality_xhttp" {"checked" if mode == "reality_xhttp" else ""} onchange="toggleMode(this.value)"> VLESS + REALITY + XHTTP + Vision</label>
+      <label class="radio"><input type="radio" name="mode" value="reality" {"checked" if mode == "reality" else ""} onchange="toggleMode(this.value)"> VLESS + REALITY + Vision (TCP)</label>
       <label class="radio"><input type="radio" name="mode" value="ws_tls" {"checked" if mode == "ws_tls" else ""} onchange="toggleMode(this.value)"> VLESS + WS + TLS</label>
     </div>
 
@@ -426,6 +428,12 @@ def dashboard_page(*, status: dict, settings: dict, clients: list, links: dict,
       <label>SNI / serverNames (через запятую, если несколько)
         <input type="text" name="reality_server_name" value="{escape(settings.get('reality_server_name', ''))}" placeholder="www.microsoft.com, www.bing.com">
       </label>
+      <div id="fields-xhttp" class="full-row" style="{xhttp_display}">
+        <label>Путь XHTTP (пусто — сгенерируется случайный)
+          <input type="text" name="xhttp_path" value="{escape(settings.get('xhttp_path', ''))}" placeholder="/a1b2c3d4e5f6">
+        </label>
+        <p class="muted">Vision (xtls-rprx-vision) поверх XHTTP работает только вместе с шифрованием VLESS (mlkem768x25519plus) — панель включает его в этом режиме автоматически, ключ уже вшит в ссылку клиента. Клиенту нужен xray-core 25.9+ (свежий v2rayNG). Ключи REALITY общие с режимом «REALITY + Vision (TCP)», но после переключения режима клиентам нужно заново импортировать ссылку.</p>
+      </div>
     </div>
 
     <div id="fields-ws_tls" class="mode-fields full-row" style="{ws_tls_display}">
@@ -527,7 +535,8 @@ function switchTab(name) {{
 }}
 
 function toggleMode(mode) {{
-  document.getElementById('fields-reality').style.display = mode === 'reality' ? '' : 'none';
+  document.getElementById('fields-reality').style.display = (mode === 'reality' || mode === 'reality_xhttp') ? '' : 'none';
+  document.getElementById('fields-xhttp').style.display = mode === 'reality_xhttp' ? '' : 'none';
   document.getElementById('fields-ws_tls').style.display = mode === 'ws_tls' ? '' : 'none';
 }}
 

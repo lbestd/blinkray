@@ -1,11 +1,19 @@
 """Everything that touches the xray-core server: its config file, the
 client (user) list, the systemd service, and building vless:// links.
 
-Two inbound modes are supported, matching the two setups documented for
-this server (see GUIDE.md): "ws_tls" (VLESS+WebSocket+TLS, self-signed
-cert, needs allowInsecure — works even when WS traffic must look like
-ordinary HTTPS) and "reality" (VLESS+TCP+REALITY — no certificate at all,
-harder to fingerprint, the currently recommended default)."""
+Three inbound modes are supported:
+- "ws_tls": VLESS+WebSocket+TLS, self-signed cert, needs allowInsecure /
+  a pinned cert — works even when WS traffic must look like ordinary HTTPS;
+- "reality": VLESS+RAW(TCP)+REALITY+Vision — no certificate at all, but
+  since 2026 Russian TSPU (DPI) detects this exact shape by signature;
+- "reality_xhttp": VLESS+XHTTP+REALITY+Vision — same REALITY camouflage and
+  keys, but the VLESS stream rides inside HTTP/2 (XHTTP) requests instead of
+  a raw TCP stream. Plain Vision only works directly over RAW+TLS/REALITY
+  (verified on Xray 26.3.27: "XTLS only supports TLS and REALITY directly
+  for now"), so this mode also turns on VLESS Encryption
+  (mlkem768x25519plus, `xray vlessenc`) — with it Vision works over any
+  transport, XHTTP included (verified end-to-end on 26.3.27, Vision padding
+  visible in the debug log)."""
 import json
 import secrets
 import subprocess
@@ -16,7 +24,7 @@ import config
 import certgen
 
 DEFAULT_SETTINGS = {
-    "mode": "ws_tls",        # "ws_tls" or "reality"
+    "mode": "ws_tls",        # "ws_tls", "reality" or "reality_xhttp" (see MODES)
     "server_name": "",       # shown to clients — used as the profile's display
                               # name (remarks) in the JSON config, so imported
                               # entries aren't a bare timestamp in v2rayNG
@@ -40,7 +48,19 @@ DEFAULT_SETTINGS = {
     "reality_private_key": "",   # generated on first apply, then kept stable
     "reality_public_key": "",
     "reality_short_id": "",
+
+    # reality_xhttp mode (also uses all reality_* fields above)
+    "xhttp_path": "",            # random per-server path, generated on first apply
+    "vless_decryption": "",      # VLESS Encryption, server side (holds the private key)
+    "vless_encryption": "",      # VLESS Encryption, client side (public) — goes into links
 }
+
+MODES = ("reality", "reality_xhttp", "ws_tls")
+REALITY_MODES = ("reality", "reality_xhttp")
+
+
+def is_reality(settings: dict) -> bool:
+    return settings.get("mode", "ws_tls") in REALITY_MODES
 
 
 # ---------------------------------------------------------------- settings
@@ -143,18 +163,20 @@ def reality_server_names(settings: dict) -> list[str]:
 
 def build_vless_link(client: dict, settings: dict) -> str:
     mode = settings.get("mode", "ws_tls")
-    if mode == "reality":
+    if mode in REALITY_MODES:
         names = reality_server_names(settings)
-        params = {
-            "encryption": "none",
-            "security": "reality",
-            "type": "tcp",
-            "flow": "xtls-rprx-vision",
+        if mode == "reality_xhttp":
+            params = {"encryption": settings.get("vless_encryption", ""), "security": "reality",
+                      "type": "xhttp", "path": settings.get("xhttp_path", ""), "mode": "auto"}
+        else:
+            params = {"encryption": "none", "security": "reality", "type": "tcp"}
+        params["flow"] = "xtls-rprx-vision"
+        params.update({
             "pbk": settings.get("reality_public_key", ""),
             "sni": names[0] if names else "",
             "sid": settings.get("reality_short_id", ""),
             "fp": settings.get("fingerprint", "chrome"),
-        }
+        })
     else:
         params = {
             "encryption": "none",
@@ -286,13 +308,16 @@ def build_xray_config(settings: dict, clients: list[dict]) -> dict:
     mode = settings.get("mode", "ws_tls")
     enabled = [c for c in clients if c.get("enabled", True)]
 
-    if mode == "reality":
+    if mode in REALITY_MODES:
+        xhttp = mode == "reality_xhttp"
         vless_clients = [
             {"id": c["id"], "email": c["name"], "flow": "xtls-rprx-vision", "level": 0}
             for c in enabled
         ]
+        # Over XHTTP, Vision needs VLESS Encryption (see module docstring).
+        decryption = settings["vless_decryption"] if xhttp else "none"
         stream_settings = {
-            "network": "tcp",
+            "network": "xhttp" if xhttp else "tcp",
             "security": "reality",
             "realitySettings": {
                 "dest": settings["reality_dest"],
@@ -301,6 +326,11 @@ def build_xray_config(settings: dict, clients: list[dict]) -> dict:
                 "shortIds": [settings["reality_short_id"]],
             },
         }
+        if xhttp:
+            # "host" deliberately unset: with REALITY the client's Host
+            # header is the SNI, and xray then accepts any Host. "auto" lets
+            # each client pick packet-up / stream-up / stream-one itself.
+            stream_settings["xhttpSettings"] = {"path": settings["xhttp_path"], "mode": "auto"}
     else:
         cert_path, key_path = xray_cert_paths()
         vless_clients = [
@@ -346,7 +376,7 @@ def build_xray_config(settings: dict, clients: list[dict]) -> dict:
                 "protocol": "vless",
                 "settings": {
                     "clients": vless_clients,
-                    "decryption": "none",
+                    "decryption": decryption,
                 },
                 "streamSettings": stream_settings,
                 "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
@@ -452,11 +482,64 @@ def ensure_reality_keys(settings: dict) -> bool:
     return changed
 
 
+def ensure_xhttp_path(settings: dict) -> bool:
+    """A random per-server XHTTP path (rather than a fixed default shared by
+    every Blinkray install, which would be one more signature). Kept stable
+    so issued links stay valid."""
+    if settings.get("xhttp_path"):
+        return False
+    settings["xhttp_path"] = "/" + secrets.token_hex(6)
+    save_settings(settings)
+    return True
+
+
+def generate_vless_encryption_pair() -> tuple[str, str]:
+    """(decryption, encryption) from `xray vlessenc`, X25519-authenticated
+    variant (short enough for a vless:// link; the key exchange itself is
+    post-quantum either way)."""
+    ok, out = _run([config.XRAY_BIN, "vlessenc"])
+    if not ok:
+        raise RuntimeError(f"xray vlessenc failed: {out}")
+    dec = enc = ""
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith('"decryption"') and not dec:
+            dec = line.split('"')[3]
+        elif line.startswith('"encryption"') and not enc:
+            enc = line.split('"')[3]
+    if not dec.startswith("mlkem768x25519plus.") or not enc.startswith("mlkem768x25519plus."):
+        raise RuntimeError(f"could not parse xray vlessenc output: {out[:300]!r}")
+    return dec, enc
+
+
+def vless_encryption_from_decryption(decryption: str) -> str:
+    """Client-side "encryption" string for an existing X25519-auth server
+    "decryption" (mlkem768x25519plus.<mode>.<ticket>.<x25519 private>) — the
+    last field's public key, with a 0-RTT client ticket. Used by the
+    importer so an existing deployment's key is kept."""
+    parts = decryption.split(".")
+    if len(parts) < 4 or parts[0] != "mlkem768x25519plus":
+        raise RuntimeError(f"unsupported VLESS decryption {decryption[:40]!r}")
+    return ".".join([parts[0], parts[1], "0rtt", public_key_from_private(parts[-1])])
+
+
+def ensure_vless_encryption(settings: dict) -> bool:
+    if settings.get("vless_decryption") and settings.get("vless_encryption"):
+        return False
+    settings["vless_decryption"], settings["vless_encryption"] = generate_vless_encryption_pair()
+    save_settings(settings)
+    return True
+
+
 def rotate_reality_keys(settings: dict) -> None:
     settings["reality_private_key"] = ""
     settings["reality_public_key"] = ""
     settings["reality_short_id"] = ""
+    settings["vless_decryption"] = ""
+    settings["vless_encryption"] = ""
     ensure_reality_keys(settings)
+    if settings.get("mode") == "reality_xhttp":
+        ensure_vless_encryption(settings)
 
 
 def validate_config() -> tuple[bool, str]:
@@ -479,8 +562,11 @@ def apply_config() -> tuple[bool, str]:
     settings/clients, validate it, and return (ok, message). Does not
     restart the service."""
     settings = load_settings()
-    if settings.get("mode", "ws_tls") == "reality":
+    if is_reality(settings):
         ensure_reality_keys(settings)
+        if settings.get("mode") == "reality_xhttp":
+            ensure_xhttp_path(settings)
+            ensure_vless_encryption(settings)
     else:
         ensure_xray_cert(settings)
         if settings.get("mtls_enabled"):

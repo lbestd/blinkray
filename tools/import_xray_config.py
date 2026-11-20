@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """One-shot importer: reads an existing, hand-written xray inbound
-config.json (VLESS+REALITY or VLESS+WS+TLS — the two shapes Blinkray itself
+config.json (VLESS+REALITY over TCP or XHTTP, or VLESS+WS+TLS — the shapes Blinkray itself
 understands) and writes it into Blinkray's settings.json/clients.json.
 
 Called by install.sh before it takes over an already-running xray.service,
@@ -60,7 +60,20 @@ def main() -> int:
         if missing:
             print(f"realitySettings missing {missing} — refusing to import", file=sys.stderr)
             return 1
-        settings["mode"] = "reality"
+        network = stream.get("network", "tcp")
+        if network in ("xhttp", "splithttp"):
+            settings["mode"] = "reality_xhttp"
+            xs = stream.get("xhttpSettings") or stream.get("splithttpSettings") or {}
+            settings["xhttp_path"] = xs.get("path", "")
+            dec = inbound.get("settings", {}).get("decryption", "none")
+            if dec and dec != "none":
+                settings["vless_decryption"] = dec
+                settings["vless_encryption"] = xm.vless_encryption_from_decryption(dec)
+        elif network in ("tcp", "raw"):
+            settings["mode"] = "reality"
+        else:
+            print(f"unsupported REALITY network {network!r} — refusing to import", file=sys.stderr)
+            return 1
         settings["reality_dest"] = rs["dest"]
         settings["reality_server_name"] = ", ".join(rs["serverNames"])
         settings["reality_private_key"] = rs["privateKey"]

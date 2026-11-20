@@ -3,9 +3,12 @@ Blinkray servers from one place. Everything under /api/v1/ is
 authenticated by a Bearer token (see auth.api_token), not the panel
 password/session cookie.
 
-Deliberately narrow: status/stats (read) plus xray service control and
-self-update. Clients and connection settings are still managed only from
-this panel's own UI.
+Deliberately narrow: status/stats (read), xray service control,
+self-update, and (as of 2026-11-20) creating/deleting individual VLESS
+clients — enough for a central dashboard to provision one real client per
+subscription-client per server, without needing the full panel password.
+Settings (mode, REALITY keys, etc.) are still changed only from this
+panel's own UI.
 """
 import asyncio
 import time
@@ -110,8 +113,44 @@ async def update_apply(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok, "output": out.strip()})
 
 
+async def clients_add(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except ValueError:
+        raise web.HTTPBadRequest(text="bad json")
+    name = str((body or {}).get("name", "")).strip()
+    if not name:
+        raise web.HTTPBadRequest(text="name required")
+
+    client = await to_thread(xray_manager.add_client, name)
+    ok, out = await to_thread(xray_manager.apply_config)
+    if not ok:
+        # Client is saved either way (matches the UI's clients_add
+        # behaviour) — report the config problem, don't silently drop it.
+        return web.json_response({"ok": False, "error": f"конфиг не прошёл проверку: {out}",
+                                   "client_id": client["id"]})
+    if (await to_thread(xray_manager.service_status))["running"]:
+        await to_thread(xray_manager.restart_service)
+
+    settings = xray_manager.load_settings()
+    link = xray_manager.build_vless_link(client, settings)
+    return web.json_response({"ok": True, "client_id": client["id"], "link": link})
+
+
+async def clients_delete(request: web.Request) -> web.Response:
+    client_id = request.match_info["client_id"]
+    await to_thread(xray_manager.delete_client, client_id)
+    await to_thread(xray_manager.delete_client_cert, client_id)
+    ok, out = await to_thread(xray_manager.apply_config)
+    if ok and (await to_thread(xray_manager.service_status))["running"]:
+        await to_thread(xray_manager.restart_service)
+    return web.json_response({"ok": ok, "output": out if not ok else ""})
+
+
 def setup_api_routes(app: web.Application) -> None:
     app.router.add_get("/api/v1/status", status)
     app.router.add_post("/api/v1/xray/{action}", xray_action)
     app.router.add_post("/api/v1/update/check", update_check)
     app.router.add_post("/api/v1/update/apply", update_apply)
+    app.router.add_post("/api/v1/clients", clients_add)
+    app.router.add_post("/api/v1/clients/{client_id}/delete", clients_delete)
