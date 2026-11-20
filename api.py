@@ -147,6 +147,21 @@ async def clients_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok, "output": out if not ok else ""})
 
 
+async def clients_link(request: web.Request) -> web.Response:
+    """Current vless:// link for an existing client, under whatever mode
+    the server is running right now. Needed because the link depends on
+    settings (mode, REALITY keys, xhttp_path, ...) that change independently
+    of the client itself — e.g. after switching the server's mode, every
+    existing client's link changes even though no client was added/removed."""
+    client_id = request.match_info["client_id"]
+    client = next((c for c in xray_manager.load_clients() if c["id"] == client_id), None)
+    if not client:
+        raise web.HTTPNotFound(text="client not found")
+    settings = xray_manager.load_settings()
+    return web.json_response({"ok": True, "client_id": client_id,
+                               "link": xray_manager.build_vless_link(client, settings)})
+
+
 def setup_api_routes(app: web.Application) -> None:
     app.router.add_get("/api/v1/status", status)
     app.router.add_post("/api/v1/xray/{action}", xray_action)
@@ -154,3 +169,4 @@ def setup_api_routes(app: web.Application) -> None:
     app.router.add_post("/api/v1/update/apply", update_apply)
     app.router.add_post("/api/v1/clients", clients_add)
     app.router.add_post("/api/v1/clients/{client_id}/delete", clients_delete)
+    app.router.add_get("/api/v1/clients/{client_id}/link", clients_link)
